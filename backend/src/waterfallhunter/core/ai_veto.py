@@ -1,22 +1,44 @@
 """AI advisory integration for WaterfallHunter.
 
-Pure Ollama integration — no Gemini. AI advisory is observational only.
+TypeSafe System One (Jev) integration. The advisory is observational only: it
+never vetoes, never mutates a decision, and is never on the critical path.
+
+Jev returns typed judgements (a probability, a rubric position) rather than
+free text, so the verdict is read from structured fields instead of parsing a
+sentence out of a completion. The human-readable ``note`` is therefore
+synthesised in code from the same canonical metrics that were sent as state.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from waterfallhunter.config import settings
+
 logger = logging.getLogger("WaterfallHunter.AICascade")
 
+# ─── Judgement constants ─────────────────────────────────────────────────
+# These, together with the question text in ``_build_questions``, are the only
+# knobs that turn a typed judgement into an advisory verdict. Keep them in one
+# place so they stay reviewable.
+VERIFIED_PROBABILITY_THRESHOLD = 0.5
+CONFIDENCE_LEVELS = (
+    "No support for the short",
+    "Weak support",
+    "Mixed support",
+    "Solid support",
+    "Strong support",
+)
+MAX_CONCURRENT_REQUESTS = 2
+RATE_LIMIT_BACKOFF_SECONDS = 1.0
+SYSTEMONE_PATH = "/v1/systemone"
+
+CANONICAL_ADVISORY_DELIVERY_GRACE_SECONDS = 300  # 5 minutes
 
 
 @dataclass(frozen=True)
@@ -26,7 +48,7 @@ class AICascadeOpinion:
     verified: bool
     note: str
     score: int
-    provider: str  # "ollama" or "none"
+    provider: str  # "typesafe" or "none"
     model: str
     raw: dict[str, Any]
 
@@ -50,7 +72,7 @@ class AICascadeOpinion:
         legacy flags (``ai_observational_only``/``ai_decision_critical``) are
         emitted so that every consumer keeps working.
         """
-        available = self.provider == "ollama"
+        available = self.provider == "typesafe"
         return {
             "observational_only": True,
             "decision_mutated": False,
@@ -68,27 +90,22 @@ class AICascadeOpinion:
 
 
 class AICascadeIntelligence:
-    """Fetch AI advisory from Ollama (local, no external API)."""
+    """Fetch a typed advisory from the TypeSafe System One API."""
 
     def __init__(self) -> None:
-        self.ollama_url = (
-            str(settings.ollama_base_url or "http://host.docker.internal:11434").rstrip("/")
-            + "/api/chat"
-        )
-        self.ollama_model = str(settings.ollama_model or "qwen2.5:1.5b")
-        # CPU-only inference: bound the queue instead of letting requests pile
-        # up behind a single llama-server slot and expire on timeout.
-        # CPU-only qwen can take longer than a web request even for a tiny
-        # answer. This runs only for ENTRY_READY and the durable notification
-        # worker allows 300s advisory grace, so 120s gives one legitimate
-        # attempt without blocking the hunter or the signal path.
-        self.timeout = 120.0
-        self.max_concurrent_requests = 2
+        self.base_url = str(
+            getattr(settings, "typesafe_base_url", "") or "https://api.typesafe.ai"
+        ).rstrip("/")
+        self.model = str(getattr(settings, "typesafe_model", "") or "jev-latest")
+        self.api_key = str(getattr(settings, "typesafe_api_key", "") or "")
+        # TypeSafe answers in seconds; the old CPU-bound 120s budget only
+        # existed because inference ran locally.
+        self.timeout = float(getattr(settings, "typesafe_timeout_seconds", 30.0) or 30.0)
         self._request_gate: asyncio.Semaphore | None = None
         logger.info(
-            "AICascadeIntelligence initialised: ollama_model=%s, ollama_url=%s",
-            self.ollama_model,
-            self.ollama_url,
+            "AICascadeIntelligence initialised: provider=typesafe model=%s configured=%s",
+            self.model,
+            bool(self.api_key),
         )
 
     @staticmethod
@@ -102,110 +119,34 @@ class AICascadeIntelligence:
             raw={"error": reason},
         )
 
-    def _coerce_opinion(self, raw: dict[str, Any]) -> AICascadeOpinion | None:
-        """Validate Ollama advisory output."""
-        try:
-            verified = bool(raw.get("verified", False))
-            note = str(raw.get("note") or raw.get("reasoning") or "")[:500]
-            score = max(0, min(100, int(raw.get("score", 0))))
-            provider = str(raw.get("provider") or "none")
-            model = str(raw.get("model") or self.ollama_model)
-            if provider not in ("ollama", "none"):
-                return AICascadeIntelligence._unavailable_advisory(
-                    "Invalid AI advisory payload."
-                )
-            return AICascadeOpinion(
-                verified=verified, note=note, score=score, provider=provider, model=model, raw=raw
-            )
-        except (ValueError, TypeError):
-            return AICascadeIntelligence._unavailable_advisory(
-                "Invalid AI advisory payload."
-            )
-
-    async def get_advisory(
-        self,
-        metrics: dict[str, Any],
-        decision: dict[str, Any] | None = None,
-    ) -> AICascadeOpinion:
-        """Fetch AI advisory from Ollama only."""
-        try:
-            prompt = self._build_prompt(metrics, decision)
-            raw = await self._request_ollama(prompt)
-            if raw is None:
-                return self._unavailable_advisory("Ollama request failed.")
-
-            # Try to parse JSON from the response
-            text = raw.get("message", {}).get("content", "")
-            try:
-                parsed = json.loads(text)
-            except (json.JSONDecodeError, ValueError):
-                # Try to find JSON in the text
-                match = re.search(r'\{.*\}', text, re.DOTALL)
-                if match:
-                    try:
-                        parsed = json.loads(match.group(0))
-                    except (json.JSONDecodeError, ValueError):
-                        return self._unavailable_advisory(
-                            "Ollama response not valid JSON."
-                        )
-                else:
-                    return self._unavailable_advisory(
-                        "Ollama response not valid JSON."
-                    )
-
-            parsed["provider"] = "ollama"
-            parsed["model"] = self.ollama_model
-            opinion = self._coerce_opinion(parsed)
-            if opinion is not None:
-                return opinion
-            return self._unavailable_advisory("Ollama advisory parse failed.")
-        except Exception as exc:
-            logger.exception("AI advisory error: %s", exc)
-            return self._unavailable_advisory(f"Ollama unavailable ({type(exc).__name__}).")
+    # ── State and questions ──────────────────────────────────────────────
 
     @staticmethod
-    def _fmt(value: Any, digits: int = 4, suffix: str = "") -> str:
-        if isinstance(value, bool) or value is None:
-            return "n/a"
-        if isinstance(value, (int, float)):
-            if value != value or value in (float("inf"), float("-inf")):
-                return "n/a"
-            return f"{value:.{digits}f}{suffix}"
-        text = str(value).strip()
-        return text if text else "n/a"
+    def _rec(value: Any) -> dict[str, Any]:
+        return value if isinstance(value, dict) else {}
 
-    def _build_prompt(
+    def _build_state(
         self,
         metrics: dict[str, Any],
         decision: dict[str, Any] | None = None,
-    ) -> str:
-        """Build the analysis prompt from the canonical decision packet.
+    ) -> dict[str, Any]:
+        """Build the evaluation state from the canonical decision packet.
 
         The previous prompt read ``readiness_score`` / ``coverage_score`` /
         ``structure_status`` / ``cascade_status`` / ``signal_summary``. None of
         those keys are produced anywhere, so every request told the model
-        "Readiness 0/100, Cascade FAIL, Entry N/A" and the model correctly
-        answered that the signal carried no information. This version reads
-        the fields ``build_entry_decision`` and the validator actually emit.
+        "Readiness 0/100, Cascade FAIL, Entry N/A" and it correctly answered
+        that the signal carried no information. This reads the fields
+        ``build_entry_decision`` and the validator actually emit.
         """
         packet = decision if isinstance(decision, dict) else {}
         if not packet:
             candidate = metrics.get("entry_decision")
             packet = candidate if isinstance(candidate, dict) else {}
 
-        def rec(value: Any) -> dict[str, Any]:
-            return value if isinstance(value, dict) else {}
-
-        symbol = str(metrics.get("symbol") or packet.get("symbol") or "UNKNOWN")
-        readiness = packet.get("entry_readiness")
-        coverage = packet.get("evidence_coverage_pct")
-        decision_label = str(packet.get("decision") or "UNAVAILABLE")
-        lifecycle = str(packet.get("lifecycle_state") or metrics.get("status") or "n/a")
+        rec = self._rec
         reasons = packet.get("reason_codes")
-        reason_text = ", ".join(str(r) for r in reasons[:10]) if isinstance(reasons, list) and reasons else "none"
         blocks = packet.get("block_reasons")
-        block_text = ", ".join(str(b) for b in blocks) if isinstance(blocks, list) and blocks else "none"
-
         cascade = rec(metrics.get("cascade_intelligence"))
         evidence = rec(packet.get("evidence_summary"))
         ev_deriv = rec(evidence.get("derivatives"))
@@ -213,73 +154,246 @@ class AICascadeIntelligence:
         ev_exec = rec(evidence.get("execution"))
         plan = rec(packet.get("trade_plan"))
         candles = rec(metrics.get("candle_features"))
-        h4 = rec(candles.get("4h"))
-        h1 = rec(candles.get("1h"))
 
-        f = self._fmt
-        # Keep the CPU prompt compact. The former version was ~500 tokens and
-        # repeated qualitative explanations the model does not need; on this
-        # host that multiplied prompt-evaluation time and starved the advisory
-        # queue. Every value is still canonical and immutable for the decision.
-        prompt = f"""Short-signal second opinion. Advisory only; never overrides engine.
-sym={symbol} decision={decision_label} lifecycle={lifecycle}
-readiness={f(readiness, 1)} coverage={f(coverage, 1)} blocks={block_text}
-cascade={f(cascade.get("status"))}:{f(cascade.get("readiness_points"), 1)}/{f(cascade.get("maximum_available"), 1)} taker={f(ev_flow.get("taker_buy_sell_ratio"), 3)} sell%={f(ev_flow.get("sell_share_pct"), 1)} oi1h%={f(ev_deriv.get("oi_change_1h_pct"), 2)} funding%={f(ev_deriv.get("funding_rate_pct"), 4)} spread%={f(ev_exec.get("spread_pct"), 3)} cross={f(evidence.get("cross_exchange_confirmed"))} extATR={f(evidence.get("anti_chase_extension_atr"), 2)}
-4h lower_high={f(h4.get("lower_high"))} failed_pullback={f(h4.get("setup") == "FAILED_PULLBACK")} bearish={f(h4.get("bearish_close"))}; 1h lower_high={f(h1.get("lower_high"))} rsi_rollover={f(h1.get("rsi_rollover"))} bearish={f(h1.get("bearish_close"))}
-plan entry={f(plan.get("entry_price"), 6)} stop={f(plan.get("stop_loss"), 6)} tp1={f(plan.get("take_profit_1"), 6)} tp2={f(plan.get("take_profit_2"), 6)} rr={f(plan.get("reward_to_risk"), 2)}
-JSON only. `score` must be an integer confidence from 0 through 100; `note`
-must be 12 words or fewer and name the strongest factor:
-{{"verified":true,"note":"Bearish structure and order flow support the short","score":75}}
-"""
-        return prompt
+        return {
+            "objective": (
+                "Second opinion on a SHORT setup. Advisory only; the engine "
+                "keeps full authority and this never overrides it."
+            ),
+            "symbol": str(metrics.get("symbol") or packet.get("symbol") or "UNKNOWN"),
+            "decision": str(packet.get("decision") or "UNAVAILABLE"),
+            "lifecycle_state": str(
+                packet.get("lifecycle_state") or metrics.get("status") or "n/a"
+            ),
+            "entry_readiness": packet.get("entry_readiness"),
+            "evidence_coverage_pct": packet.get("evidence_coverage_pct"),
+            "reason_codes": reasons[:10] if isinstance(reasons, list) else [],
+            "block_reasons": blocks if isinstance(blocks, list) else [],
+            "cascade": {
+                "status": cascade.get("status"),
+                "readiness_points": cascade.get("readiness_points"),
+                "maximum_available": cascade.get("maximum_available"),
+            },
+            "order_flow": {
+                "taker_buy_sell_ratio": ev_flow.get("taker_buy_sell_ratio"),
+                "sell_share_pct": ev_flow.get("sell_share_pct"),
+            },
+            "derivatives": {
+                "oi_change_1h_pct": ev_deriv.get("oi_change_1h_pct"),
+                "funding_rate_pct": ev_deriv.get("funding_rate_pct"),
+            },
+            "execution": {
+                "spread_pct": ev_exec.get("spread_pct"),
+            },
+            "evidence": {
+                "cross_exchange_confirmed": evidence.get("cross_exchange_confirmed"),
+                "anti_chase_extension_atr": evidence.get("anti_chase_extension_atr"),
+            },
+            "candles_4h": {
+                "lower_high": rec(candles.get("4h")).get("lower_high"),
+                "failed_pullback": rec(candles.get("4h")).get("setup") == "FAILED_PULLBACK",
+                "bearish_close": rec(candles.get("4h")).get("bearish_close"),
+            },
+            "candles_1h": {
+                "lower_high": rec(candles.get("1h")).get("lower_high"),
+                "rsi_rollover": rec(candles.get("1h")).get("rsi_rollover"),
+                "bearish_close": rec(candles.get("1h")).get("bearish_close"),
+            },
+            "trade_plan": {
+                "entry_price": plan.get("entry_price"),
+                "stop_loss": plan.get("stop_loss"),
+                "take_profit_1": plan.get("take_profit_1"),
+                "take_profit_2": plan.get("take_profit_2"),
+                "reward_to_risk": plan.get("reward_to_risk"),
+            },
+        }
 
-    async def _request_ollama(self, prompt: str) -> dict[str, Any] | None:
-        """Call Ollama API."""
-        payload = {
-            "model": self.ollama_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-            # Force JSON at the provider boundary and bound generation. The
-            # old advisory prompt merely *asked* for a tiny JSON object, so a
-            # CPU model could still spend tens of seconds generating prose
-            # before failing the parser. This contract needs one sentence and
-            # one score, not an essay.
-            "format": "json",
-            "options": {"temperature": 0.1, "num_predict": 96},
+    def _build_questions(self) -> dict[str, Any]:
+        """The typed judgements asked about every signal.
+
+        Two independent questions over the same state, answered in one call.
+        """
+        return {
+            "setup_verified": {
+                "type": "noul",
+                "instructions": (
+                    "Does the supplied evidence support a valid short setup?"
+                ),
+                "criteria": {
+                    "true": "Bearish structure and/or sell-side flow support the short",
+                    "false": "Evidence is mixed, stale, or contradicts the short",
+                },
+            },
+            "confidence": {
+                "type": "score",
+                "instructions": "How strong is the evidence for the short?",
+                "criteria": list(CONFIDENCE_LEVELS),
+            },
+        }
+
+    # ── Note synthesis ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _synthesize_note(state: dict[str, Any], verified: bool) -> str:
+        """Build the human-readable note from the canonical state.
+
+        Jev returns judgements, not prose, so the sentence is composed here
+        from the same values that were evaluated.
+        """
+        factors: list[str] = []
+        status = str((state.get("cascade") or {}).get("status") or "").strip()
+        if status:
+            factors.append(f"cascade {status.lower()}")
+
+        taker = (state.get("order_flow") or {}).get("taker_buy_sell_ratio")
+        if isinstance(taker, (int, float)) and not isinstance(taker, bool):
+            factors.append(f"taker {taker:.2f}")
+
+        h4 = state.get("candles_4h") or {}
+        if h4.get("lower_high"):
+            factors.append("4h lower high")
+        elif h4.get("bearish_close"):
+            factors.append("bearish 4h close")
+        else:
+            h1 = state.get("candles_1h") or {}
+            if h1.get("rsi_rollover"):
+                factors.append("1h rsi rollover")
+
+        if not factors:
+            return "Insufficient canonical evidence for a second opinion"
+        verdict = "support" if verified else "do not support"
+        return f"{', '.join(factors[:3])} {verdict} the short"[:500]
+
+    # ── Evaluation ───────────────────────────────────────────────────────
+
+    def _coerce_opinion(
+        self,
+        answers: dict[str, Any],
+        model: str,
+    ) -> AICascadeOpinion:
+        """Validate the typed answers into an advisory opinion."""
+        try:
+            verified_answer = self._rec(answers.get("setup_verified"))
+            confidence_answer = self._rec(answers.get("confidence"))
+
+            probability = float(verified_answer.get("noul", 0.0))
+            probability = max(0.0, min(1.0, probability))
+            verified = probability >= VERIFIED_PROBABILITY_THRESHOLD
+
+            raw_score = float(confidence_answer.get("score", 0.0))
+            span = max(1, len(CONFIDENCE_LEVELS) - 1)
+            score = int(round(max(0.0, min(float(span), raw_score)) / span * 100))
+        except (TypeError, ValueError):
+            return self._unavailable_advisory("Invalid TypeSafe advisory payload.")
+
+        return AICascadeOpinion(
+            verified=verified,
+            note="",
+            score=score,
+            provider="typesafe",
+            model=model or self.model,
+            raw={
+                "setup_verified": verified_answer,
+                "confidence": confidence_answer,
+                "verified_probability": probability,
+            },
+        )
+
+    async def get_advisory(
+        self,
+        metrics: dict[str, Any],
+        decision: dict[str, Any] | None = None,
+    ) -> AICascadeOpinion:
+        """Fetch a typed advisory from TypeSafe."""
+        if not self.api_key:
+            return self._unavailable_advisory(
+                "TYPESAFE_API_KEY is not configured."
+            )
+        try:
+            state = self._build_state(metrics, decision)
+            payload = {
+                "state": state,
+                "model": self.model,
+                "questions": self._build_questions(),
+            }
+            response = await self._request_typesafe(payload)
+            if response is None:
+                return self._unavailable_advisory("TypeSafe request failed.")
+
+            answers = response.get("answers")
+            if not isinstance(answers, dict):
+                return self._unavailable_advisory(
+                    "TypeSafe response contained no answers."
+                )
+
+            opinion = self._coerce_opinion(answers, str(response.get("model") or ""))
+            if opinion.provider == "none":
+                return opinion
+            return AICascadeOpinion(
+                verified=opinion.verified,
+                note=self._synthesize_note(state, opinion.verified),
+                score=opinion.score,
+                provider=opinion.provider,
+                model=opinion.model,
+                raw=opinion.raw,
+            )
+        except Exception as exc:
+            logger.exception("AI advisory error: %s", exc)
+            return self._unavailable_advisory(
+                f"TypeSafe unavailable ({type(exc).__name__})."
+            )
+
+    async def _request_typesafe(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """POST to the System One endpoint, backing off once on rate limits."""
+        url = f"{self.base_url}{SYSTEMONE_PATH}"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
         }
         if self._request_gate is None:
-            self._request_gate = asyncio.Semaphore(self.max_concurrent_requests)
+            self._request_gate = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
         try:
             await asyncio.wait_for(
                 self._request_gate.acquire(), timeout=self.timeout
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "Ollama advisory queue saturated; skipping request rather than "
-                "queueing behind an unbounded backlog."
+                "TypeSafe advisory queue saturated; skipping request rather "
+                "than queueing behind an unbounded backlog."
             )
             return None
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(self.ollama_url, json=payload)
+                for attempt in range(2):
+                    response = await client.post(url, json=payload, headers=headers)
+                    if response.status_code in (429, 529) and attempt == 0:
+                        logger.warning(
+                            "TypeSafe rate limited (HTTP %s); backing off %.1fs.",
+                            response.status_code,
+                            RATE_LIMIT_BACKOFF_SECONDS,
+                        )
+                        await asyncio.sleep(RATE_LIMIT_BACKOFF_SECONDS)
+                        continue
+                    break
                 if response.status_code != 200:
                     logger.warning(
-                        "Ollama API error (HTTP %s): %s",
+                        "TypeSafe API error (HTTP %s): %s",
                         response.status_code,
                         response.text[:200],
                     )
                     return None
-                return response.json()
+                body = response.json()
+                return body if isinstance(body, dict) else None
         except httpx.TimeoutException as exc:
             logger.warning(
-                "Ollama request timed out after %ss on CPU (%s); advisory marked "
+                "TypeSafe request timed out after %ss (%s); advisory marked "
                 "unavailable.",
                 self.timeout,
                 type(exc).__name__,
             )
             return None
         except Exception as exc:
-            logger.warning("Ollama request failed: %s", exc)
+            logger.warning("TypeSafe request failed: %s", exc)
             return None
         finally:
             self._request_gate.release()
@@ -287,9 +401,9 @@ must be 12 words or fewer and name the strongest factor:
     def status(self) -> dict[str, str]:
         """Return AI status for health checks."""
         return {
-            "ai_model": self.ollama_model,
-            "ai_status": "AVAILABLE",
-            "provider": "ollama",
+            "ai_model": self.model,
+            "ai_status": "AVAILABLE" if self.api_key else "UNAVAILABLE",
+            "provider": "typesafe",
         }
 
 
@@ -302,18 +416,17 @@ def get_ai_intelligence() -> AICascadeIntelligence:
         _ai_intel = AICascadeIntelligence()
     return _ai_intel
 
-# ─── AIVetoEngine: deterministic veto + Ollama advisory ──────────────────
 
-CANONICAL_ADVISORY_DELIVERY_GRACE_SECONDS = 300  # 5 minutes
+# ─── AIVetoEngine: deterministic veto + TypeSafe advisory ────────────────
 
 
 class AIVetoEngine:
-    """Deterministic veto engine with Ollama AI advisory.
+    """Deterministic veto engine with a TypeSafe AI advisory.
 
     Provides:
     - evaluate_deterministic: provider-free market-data veto, no AI call
-    - advisory_for_decision: async AI advisory from Ollama
-    - get_observational_advisory: async Ollama advisory without veto authority
+    - advisory_for_decision: async AI advisory from TypeSafe
+    - get_observational_advisory: async advisory without veto authority
     - evaluate_symbol: compatibility API combining both
     """
 
@@ -399,7 +512,7 @@ class AIVetoEngine:
         metrics: dict[str, Any],
         decision: dict[str, Any],
     ) -> dict[str, Any]:
-        """Get AI advisory from Ollama for the given metrics."""
+        """Get the AI advisory from TypeSafe for the given metrics."""
         opinion = await self._intel.get_advisory(
             {**metrics, "symbol": symbol},
             decision,
@@ -412,7 +525,7 @@ class AIVetoEngine:
         orderbook: dict[str, Any],
         ticker: dict[str, Any],
     ) -> dict[str, Any]:
-        """Fetch the Ollama advisory without granting it veto authority."""
+        """Fetch the TypeSafe advisory without granting it veto authority."""
         opinion = await self._intel.get_advisory(
             {
                 "symbol": symbol,
@@ -422,7 +535,7 @@ class AIVetoEngine:
         )
         advisory = opinion.to_observational_advisory()
         logger.info(
-            "Ollama Advisory [%s]: %s (Conf: %s%%) | Reason: %s",
+            "TypeSafe Advisory [%s]: %s (Conf: %s%%) | Reason: %s",
             symbol,
             advisory["ai_advice"],
             advisory["ai_confidence"],

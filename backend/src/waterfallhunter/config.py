@@ -32,11 +32,11 @@ class Settings(BaseSettings):
     # 12-hour health report interval (in seconds, default 43200 = 12h)
     telegram_health_report_interval: int = 43200
 
-        # AI: Ollama only
-
-    # Ollama fallback for AI analysis.
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.2:3b"
+    # AI advisory: TypeSafe System One (Jev). Observational only.
+    typesafe_api_key: str | None = None
+    typesafe_base_url: str = "https://api.typesafe.ai"
+    typesafe_model: str = "jev-latest"
+    typesafe_timeout_seconds: float = 30.0
 
     # CoinGlass derivatives.
     coinglass_api_key: str | None = None

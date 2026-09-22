@@ -1,12 +1,12 @@
 # WaterfallHunter
 
-Professional real-time crypto signal intelligence system with multi-source cascade verification, AI advisory (Ollama), and backtesting.
+Professional real-time crypto signal intelligence system with multi-source cascade verification, AI advisory (TypeSafe/Jev), and backtesting.
 
 ## Architecture
 
 ```
 LBank API → Catalog (149 symbols) → Multi-Source Scanner → Cascade Intelligence
-    → Entry Decision Engine → AI Advisory (Ollama) → Telegram + Dashboard
+    → Entry Decision Engine → AI Advisory (TypeSafe/Jev) → Telegram + Dashboard
 ```
 
 ## Key Components
@@ -16,7 +16,7 @@ LBank API → Catalog (149 symbols) → Multi-Source Scanner → Cascade Intelli
 | Multi-Source Scanner | Real-time scanning of the active LBank futures catalogue (refreshed every 15 minutes) |
 | Cascade Intelligence | A secondary flow/liquidity confirmation: trade flow (3), derivatives (3), liquidity (2), liquidation flow (2). PASS needs at least 4 available points and 50% of those points. It overlaps with primary order-flow, derivatives and execution evidence, so it is a configurable confirmation gate, not independent proof. |
 | Entry Decision Engine | Produces ENTRY_READY / FORMING / LATE / NO_TRADE decisions |
-| AI Advisory | Ollama (qwen2.5:1.5b) — observational only, no veto power |
+| AI Advisory | TypeSafe System One (Jev) — observational only, no veto power |
 | Paper-trade recorder | Opens on every canonical ENTRY_READY; settles against live LBank prices at stop, targets, or a 24h timeout. It charges round-trip fees and is not a validated performance claim. |
 | Risk Manager | Dynamic 4x–18x **isolated** leverage advisory based on canonical readiness, stop distance, ATR, friction and execution suitability |
 | Telegram Bot | Signal alerts + /signals, /health, /top, /help commands |
@@ -48,9 +48,10 @@ weighted-average formula that older versions of this README described:
 | Cascade | 10 | Secondary confirmation; see the overlap caveat above |
 
 `fundamental_scorer.py` is currently an informational endpoint and has **zero
-weight** in the live decision. Ollama is observational and has **zero weight**;
-only the deterministic order-book veto can hard-block. Neither is represented
-as score points until a replay/walk-forward study proves a contribution.
+weight** in the live decision. The AI advisory is observational and has **zero
+weight**; only the deterministic order-book veto can hard-block. Neither is
+represented as score points until a replay/walk-forward study proves a
+contribution.
 
 The current policy is operator-adjustable from the protected dashboard. Every
 change applies to new signals only and is recorded with its prior value. The
@@ -82,16 +83,19 @@ walk-forward and holdout protocol.
 
 ## AI Configuration
 
-- **Model**: qwen2.5:1.5b (Ollama, CPU-only)
-- **URL**: http://host.docker.internal:11434
-- **Timeout**: 60s (CPU mode, concurrency bounded at 2)
-- **Provider**: Ollama only (no external APIs)
+- **Provider**: TypeSafe System One (Jev) — `POST https://api.typesafe.ai/v1/systemone`
+- **Model**: `jev-latest` alias; pin a versioned id such as `jev-1.13.0` to freeze behaviour
+- **Timeout**: 30s (concurrency bounded at 2)
+- **Key**: `TYPESAFE_API_KEY` — create one at https://console.typesafe.ai/keys
+- **Judgements**: one batched call per ENTRY_READY signal — a `noul` ("does the
+  evidence support the short?") and a `score` ("how strong is it?"). The verdict
+  and the note are derived from those typed answers, not parsed from prose.
 
 ## Quick Start
 
 ### Prerequisites
 - Docker & Docker Compose
-- Ollama installed on host with qwen2.5:1.5b model
+- A TypeSafe API key (https://console.typesafe.ai/keys)
 
 ### Deployment
 
@@ -102,7 +106,7 @@ cd WaterfallHunter
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your Telegram token, Ollama URL, etc.
+# Edit .env with your Telegram token, TypeSafe API key, etc.
 
 # Build and start
 docker-compose up -d --build
@@ -116,8 +120,8 @@ make up
 See `.env.example` for all required variables:
 - `TELEGRAM_TOKEN` — Telegram bot token
 - `TELEGRAM_CHAT_ID` — Telegram chat ID
-- `OLLAMA_BASE_URL` — Ollama API URL (default: http://host.docker.internal:11434)
-- `OLLAMA_MODEL` — Ollama model name (default: qwen2.5:1.5b)
+- `TYPESAFE_API_KEY` — TypeSafe API key (advisory is skipped when unset)
+- `TYPESAFE_MODEL` — TypeSafe model name or alias (default: jev-latest)
 - `COINGLASS_API_KEY` — Coinglass API key
 - `BACKTESTER_INITIAL_CAPITAL` — Backtest capital (default: 100)
 - `BACKTESTER_MAX_LEVERAGE` — Max leverage (default: 14)

@@ -22,8 +22,8 @@ def test_signal_message_escapes_ai_reasoning_and_includes_real_context():
     assert "On-chain sample: 2" in message
 
 
-def test_signal_message_reports_the_actual_fallback_provider():
+def test_signal_message_reports_the_actual_advisory_provider():
     message = TelegramNotifier.build_signal_message("PEPE/USDT:USDT", {
-        "metrics": {"ai_advisory": {"ai_provider": "ollama"}},
+        "metrics": {"ai_advisory": {"ai_provider": "typesafe"}},
     })
-    assert "AI advisory (ollama)" in message
+    assert "AI advisory (typesafe)" in message

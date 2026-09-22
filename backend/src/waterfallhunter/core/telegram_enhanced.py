@@ -116,7 +116,7 @@ class _FallbackSettings:
 
     telegram_token: str | None = os.getenv("TELEGRAM_TOKEN")
     telegram_chat_id: str | None = os.getenv("TELEGRAM_CHAT_ID")
-    ollama_host: str | None = os.getenv("OLLAMA_HOST")
+    typesafe_api_key: str | None = os.getenv("TYPESAFE_API_KEY")
     db_path: str | None = os.getenv(
         "WFH_DB_PATH", "/srv/waterfallhunter/data/waterfallhunter.db"
     )
@@ -536,34 +536,35 @@ def _memory_usage_percent() -> float | None:
 
 
 def _ai_status(settings: Any) -> str:
-    """Report Ollama availability by probing it.
+    """Report TypeSafe advisory availability by probing it.
 
-    This previously read ``settings.ollama_host``, a field that does not exist
-    (the real one is ``ollama_base_url``), and then reported "down" purely
-    because that lookup returned None. It never contacted Ollama at all, so the
-    status was wrong in both directions: "down" while Ollama served thousands
-    of advisories, and it would have said "active" for an unreachable host.
+    An earlier version reported the advisory as "down" purely because a
+    settings lookup returned None: it never contacted the provider at all, so
+    the status was wrong in both directions. This probes the configured
+    provider instead.
     """
-    base_url = str(getattr(settings, "ollama_base_url", "") or os.getenv("OLLAMA_HOST") or "").strip()
-    if not base_url:
-        return "Ollama: not configured"
+    api_key = str(
+        getattr(settings, "typesafe_api_key", "") or os.getenv("TYPESAFE_API_KEY") or ""
+    ).strip()
+    if not api_key:
+        return "AI advisory: not configured"
 
-    model = str(getattr(settings, "ollama_model", "") or "")
+    base_url = str(
+        getattr(settings, "typesafe_base_url", "") or "https://api.typesafe.ai"
+    ).strip()
+    model = str(getattr(settings, "typesafe_model", "") or "")
     try:
-        response = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=4.0)
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=4.0,
+        )
         if response.status_code != 200:
-            return f"Ollama: unreachable (HTTP {response.status_code})"
-        names = {
-            str(entry.get("name") or "")
-            for entry in (response.json().get("models") or [])
-            if isinstance(entry, dict)
-        }
+            return f"AI advisory: unreachable (HTTP {response.status_code})"
     except Exception:
-        return "Ollama: unreachable"
+        return "AI advisory: unreachable"
 
-    if model and model not in names:
-        return f"Ollama: up, model {model} missing"
-    return f"Ollama: active ({model})" if model else "Ollama: active"
+    return f"AI advisory: active ({model})" if model else "AI advisory: active"
 
 
 def _exchange_sources_online() -> tuple[int, int]:

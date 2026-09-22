@@ -5,10 +5,6 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: waterfall-backend
-    # Ollama runs on the host; host-gateway keeps the advisory endpoint
-    # reachable across container recreations.
-    extra_hosts:
-      - host.docker.internal:host-gateway
     # Publish the API on host loopback so the nginx edge proxies a stable
     # address instead of a container IP that changes on every recreation.
     ports:

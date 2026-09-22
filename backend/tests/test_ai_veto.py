@@ -4,7 +4,7 @@ import time
 import pytest
 
 from waterfallhunter import main
-from waterfallhunter.core.ai_veto import AIVetoEngine
+from waterfallhunter.core.ai_veto import AICascadeOpinion, AIVetoEngine
 
 
 def test_ai_veto_engine_has_no_local_model_fallback():
@@ -13,25 +13,29 @@ def test_ai_veto_engine_has_no_local_model_fallback():
     assert not hasattr(engine, "ollama_url")
     assert not hasattr(engine, "ollama_model")
     assert not hasattr(engine, "_get_ollama_opinion")
+    assert not hasattr(engine._intel, "ollama_url")
+    assert not hasattr(engine._intel, "ollama_model")
 
 
-def test_deterministic_veto_does_not_invoke_gemini(monkeypatch):
+def test_deterministic_veto_does_not_invoke_the_advisory_provider(monkeypatch):
     engine = AIVetoEngine()
     invoked = False
 
-    async def opinion(*args, **kwargs):
+    async def advisory(*args, **kwargs):
         nonlocal invoked
         invoked = True
-        return {
-            "advice": "AVOID",
-            "confidence": 99,
-            "reasoning": "provider must not be part of deterministic evaluation",
-            "provider": "gemini",
-        }
+        return AICascadeOpinion(
+            verified=False,
+            note="provider must not be part of deterministic evaluation",
+            score=99,
+            provider="typesafe",
+            model="jev-latest",
+            raw={},
+        )
 
-    monkeypatch.setattr(engine, "_get_gemini_opinion", opinion)
+    monkeypatch.setattr(engine._intel, "get_advisory", advisory)
 
-    vetoed, advisory = engine.evaluate_deterministic(
+    vetoed, advisory_data = engine.evaluate_deterministic(
         "TESTUSDT",
         {"bids": [[1.0, 1.0]], "asks": [[1.1, 1.0]]},
         {"last": 1.0},
@@ -39,24 +43,26 @@ def test_deterministic_veto_does_not_invoke_gemini(monkeypatch):
 
     assert vetoed is False
     assert invoked is False
-    assert advisory["deterministic_veto"] is False
-    assert advisory["ai_observational_only"] is True
-    assert advisory["ai_decision_critical"] is False
+    assert advisory_data["deterministic_veto"] is False
+    assert advisory_data["ai_observational_only"] is True
+    assert advisory_data["ai_decision_critical"] is False
 
 
 def test_evaluate_symbol_preserves_the_advisory_provider(monkeypatch):
     engine = AIVetoEngine()
 
-    async def opinion(*args, **kwargs):
-        return {
-            "advice": "NEUTRAL",
-            "confidence": 42,
-            "reasoning": "live data is mixed",
-            "provider": "gemini",
-        }
+    async def advisory(*args, **kwargs):
+        return AICascadeOpinion(
+            verified=True,
+            note="live data is mixed",
+            score=42,
+            provider="typesafe",
+            model="jev-1.13.0",
+            raw={},
+        )
 
-    monkeypatch.setattr(engine, "_get_gemini_opinion", opinion)
-    vetoed, advisory = asyncio.run(
+    monkeypatch.setattr(engine._intel, "get_advisory", advisory)
+    vetoed, advisory_data = asyncio.run(
         engine.evaluate_symbol(
             "TESTUSDT",
             {"bids": [[1.0, 1.0]], "asks": [[1.1, 1.0]]},
@@ -65,10 +71,11 @@ def test_evaluate_symbol_preserves_the_advisory_provider(monkeypatch):
     )
 
     assert vetoed is False
-    assert advisory["ai_provider"] == "gemini"
-    assert advisory["ai_advice"] == "NEUTRAL"
-    assert advisory["ai_observational_only"] is True
-    assert advisory["ai_decision_critical"] is False
+    assert advisory_data["ai_provider"] == "typesafe"
+    assert advisory_data["ai_advice"] == "NEUTRAL"
+    assert advisory_data["ai_model"] == "jev-1.13.0"
+    assert advisory_data["ai_observational_only"] is True
+    assert advisory_data["ai_decision_critical"] is False
 
 
 def test_deterministic_entry_gate_runs_for_armed_candidate(monkeypatch):
