@@ -12,7 +12,7 @@
     "test:e2e:built": "playwright test"
   },
   "dependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.6.2",
     "@types/react": "^18.3.2",
     "autoprefixer": "^10.4.19",
     "lucide-react": "^1.31.0",
