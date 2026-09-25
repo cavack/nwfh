@@ -1,6 +1,6 @@
 # Core APIs and Async Handling
 fastapi==0.140.0
-uvicorn[standard]==0.52.4
+uvicorn[standard]==0.53.0
 # Keep security-sensitive transitive dependencies explicit so audit fixes cannot
 # be lost during exchange-client upgrades.
 aiohttp==3.14.3
