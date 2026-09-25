@@ -8,7 +8,7 @@ Only `ENTRY_READY` is a proactive entry signal. `ACTIVE` means an earlier entry-
 
 ## Readiness policy
 
-The current `entry_policy_v1` uses hard invalidators plus weighted evidence. Its versioned bands are `ENTRY_READY >= 78`, `FORMING >= 55`, otherwise `NO_TRADE`, subject to mandatory timing/direction/execution checks and anti-chase. The Anti-Chase hard-extension boundary is `1.2 ATR`.
+The current `entry_policy_v1` uses hard invalidators plus weighted evidence. Its versioned bands are `ENTRY_READY >= 70`, `FORMING >= 55`, otherwise `NO_TRADE`, subject to mandatory timing/direction/execution checks and anti-chase. The Anti-Chase hard-extension boundary is `2.5 ATR`.
 
 ## Hard invalidators
 
@@ -21,7 +21,7 @@ Anti-Chase is mandatory, but it is a late-entry classification rather than a sou
 1. Validate freshness and deterministic invalidators.
 2. Compute readiness and mandatory direction/timing/execution gates.
 3. Classify readiness below `55` as `NO_TRADE`.
-4. Convert an otherwise `FORMING`, `ENTRY_READY`, or `ACTIVE` decision to `LATE` when extension is at least `1.2 ATR`.
+4. Convert an otherwise `FORMING`, `ENTRY_READY`, or `ACTIVE` decision to `LATE` when extension is at least `2.5 ATR`.
 5. Classify lifecycle `EXHAUSTED` as `LATE` independently of readiness.
 
 Therefore Anti-Chase does not turn sub-`FORMING` evidence into `LATE`. New `LATE` packets persist explicit `late_origin` provenance (`ANTI_CHASE` or `LIFECYCLE_EXHAUSTED`) while `lifecycle_state` always reports the state of the current evaluation. Terminal retention preserves `late_origin` rather than freezing the displayed lifecycle state. A same-lifecycle, non-`EXHAUSTED` legacy packet may recover only when it predates this provenance field, has readiness below `55`, and has exactly `ANTI_CHASE_HARD_BLOCK`; current genuine Anti-Chase and lifecycle-`EXHAUSTED` terminals remain terminal, and material changes to lifecycle/origin/blockers are persisted in the immutable event history.

@@ -1060,7 +1060,7 @@ def test_ci_exports_and_uploads_exact_tested_image_bundle_to_deploy_job() -> Non
     assert "tested_watchdog_image_digest" in container_job
     assert "tested_image_bundle_sha256" in container_job
     assert "docker save" in container_job
-    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in container_job
+    assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in container_job
 
     deploy_job = ci_text.split("\n  deploy-production:\n", maxsplit=1)[1]
     assert "tested_backend_image_digest: ${{ needs.container-validation.outputs.tested_backend_image_digest }}" in deploy_job
@@ -1070,7 +1070,7 @@ def test_ci_exports_and_uploads_exact_tested_image_bundle_to_deploy_job() -> Non
 
     assert "workflow_call:" in deploy_text
     assert "tested_backend_image_digest:" in deploy_text
-    assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in deploy_text
+    assert "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in deploy_text
     assert "WFH_TESTED_IMAGE_BUNDLE_SHA256" in deploy_text
     assert "WFH_TESTED_BACKEND_IMAGE_DIGEST" in deploy_text
 

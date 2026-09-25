@@ -26,7 +26,7 @@ LBank API → Catalog (149 symbols) → Multi-Source Scanner → Cascade Intelli
 | Level | Score | Cascade | Description |
 |-------|-------|---------|-------------|
 | ENTRY_READY | ≥70 | PASS | Ready to enter — Telegram alert sent |
-| FORMING | 55-69 | PASS | Forming — visible on dashboard |
+| FORMING | >= 55 and < 70 | PASS | Forming — visible on dashboard |
 | NO_TRADE | <55 or FAIL | — | Conditions not met |
 | LATE | — | — | Signal too late — do not chase |
 | INVALIDATED | — | — | Structure broken |
@@ -55,8 +55,10 @@ contribution.
 
 The current policy is operator-adjustable from the protected dashboard. Every
 change applies to new signals only and is recorded with its prior value. The
-shipped defaults are ENTRY_READY >=70, FORMING >=55, 55% evidence coverage,
+shipped defaults are ENTRY_READY >= 70, FORMING >= 55, 55% evidence coverage,
 2.5 ATR anti-chase, 600s analysis freshness and 60s reference freshness.
+
+Anti-Chase applies only after readiness classification and does not turn sub-`FORMING` evidence into `LATE`; `late_origin` records whether a terminal `LATE` outcome came from anti-chase or lifecycle exhaustion.
 
 ## Observational Research
 
