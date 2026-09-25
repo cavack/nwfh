@@ -3,11 +3,11 @@ from waterfallhunter.config import (
 )
 
 
-def test_settings_exposes_the_signal_only_and_gemini_configuration_fields():
+def test_settings_exposes_the_signal_only_and_typesafe_configuration_fields():
     configured = Settings(
         _env_file=None,
         live_trading_enabled=False,
-        gemini_api_key="test-key",
+        typesafe_api_key="test-key",
     )
 
     assert (
@@ -16,13 +16,13 @@ def test_settings_exposes_the_signal_only_and_gemini_configuration_fields():
     )
 
     assert (
-        configured.gemini_api_key
+        configured.typesafe_api_key
         == "test-key"
     )
 
     assert (
-        configured.gemini_model
-        == "gemini-flash-lite-latest"
+        configured.typesafe_model
+        == "jev-latest"
     )
 
 
