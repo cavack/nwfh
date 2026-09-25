@@ -1,5 +1,5 @@
 # Core APIs and Async Handling
-fastapi==0.140.0
+fastapi==0.141.1
 uvicorn[standard]==0.53.0
 # Keep security-sensitive transitive dependencies explicit so audit fixes cannot
 # be lost during exchange-client upgrades.
