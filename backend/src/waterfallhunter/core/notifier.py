@@ -465,14 +465,24 @@ class TelegramNotifier:
         ]
         advisory = payload.get("ai_advisory") if isinstance(payload.get("ai_advisory"), dict) else {}
         if advisory.get("ai_status") == "AVAILABLE":
-            lines.append(
-                "🤖 AI: "
-                f"<b>{escape(str(advisory.get('ai_advice') or 'UNAVAILABLE'))}</b> · "
-                f"{cls._number(advisory.get('ai_confidence'), 0)}% · "
-                f"{escape(str(advisory.get('ai_provider') or 'none'))}"
-            )
+            answer_yes = advisory.get("ai_answer_yes")
+            legacy_advice = str(advisory.get("ai_advice") or "")
+            if answer_yes is True or legacy_advice in {"SHORT", "NEUTRAL", "SUPPORTS_SHORT"}:
+                answer = "YES"
+            elif answer_yes is False or legacy_advice in {"AVOID", "DOES_NOT_SUPPORT_SHORT"}:
+                answer = "NO"
+            else:
+                answer = "—"
+            lines.extend((
+                "🧠 <b>Jev evidence check — observational only</b>",
+                f"Q: {escape(str(advisory.get('ai_question') or 'Does the supplied evidence support a valid short setup?'))}",
+                f"A: <b>{answer} — {escape(str(advisory.get('ai_advice') or 'UNAVAILABLE'))}</b>",
+                f"Strength: <b>{cls._number(advisory.get('ai_confidence'), 0)}%</b> · {escape(str(advisory.get('ai_confidence_label') or 'Unlabelled'))}",
+                f"Basis: {escape(str(advisory.get('ai_reasoning') or 'No canonical basis available'))}",
+                f"Model: {escape(str(advisory.get('ai_provider') or 'typesafe'))} · {escape(str(advisory.get('ai_model') or 'unknown'))}",
+            ))
         else:
-            lines.append("🤖 AI: <b>UNAVAILABLE</b>")
+            lines.append("🧠 <b>Jev evidence check unavailable</b> — engine decision unchanged")
         if reasons:
             lines.append("🧾 " + " · ".join(reasons))
         lines.extend(["", "<i>Signal only. No live order is placed.</i>"])
@@ -694,10 +704,14 @@ class TelegramSignalTransport:
                 ).fetchone()
         except (OSError, sqlite3.Error):
             return False, "DECISION_STATE_UNAVAILABLE"
-        # Accept any recent decision — don't suppress alerts due to state changes
         if row is None:
             return False, "DECISION_NOT_FOUND"
-        return True, None
+        latest_event_id, latest_decision = int(row[0]), str(row[1] or "")
+        if (
+            latest_event_id != decision_event_id
+            or latest_decision != "ENTRY_READY"
+        ):
+            return False, "SUPERSEDED_DECISION"
         return True, None
 
     def _load_advisory_for_decision(self, decision_event_id: int) -> dict[str, Any] | None:

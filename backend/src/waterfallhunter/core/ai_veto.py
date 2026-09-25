@@ -73,16 +73,23 @@ class AICascadeOpinion:
         emitted so that every consumer keeps working.
         """
         available = self.provider == "typesafe"
+        confidence_index = min(
+            len(CONFIDENCE_LEVELS) - 1,
+            max(0, round(int(self.score) / 100 * (len(CONFIDENCE_LEVELS) - 1))),
+        )
         return {
             "observational_only": True,
             "decision_mutated": False,
             "ai_observational_only": True,
             "ai_decision_critical": False,
             "ai_status": "AVAILABLE" if available else "UNAVAILABLE",
-            "ai_advice": ("NEUTRAL" if self.verified else "AVOID")
+            "ai_question": "Does the supplied evidence support a valid short setup?",
+            "ai_advice": ("SUPPORTS_SHORT" if self.verified else "DOES_NOT_SUPPORT_SHORT")
             if available
             else "UNAVAILABLE",
+            "ai_answer_yes": bool(self.verified) if available else None,
             "ai_confidence": int(self.score) if available else 0,
+            "ai_confidence_label": CONFIDENCE_LEVELS[confidence_index] if available else "Unavailable",
             "ai_reasoning": str(self.note),
             "ai_provider": self.provider if available else "none",
             "ai_model": self.model if available else "none",
@@ -275,12 +282,18 @@ class AICascadeIntelligence:
         try:
             verified_answer = self._rec(answers.get("setup_verified"))
             confidence_answer = self._rec(answers.get("confidence"))
+            probability_value = verified_answer.get("noul")
+            score_value = confidence_answer.get("score")
+            if isinstance(probability_value, bool) or isinstance(score_value, bool):
+                raise ValueError("boolean TypeSafe answer")
+            if not isinstance(probability_value, (int, float)) or not isinstance(score_value, (int, float)):
+                raise ValueError("missing or invalid TypeSafe answer")
 
-            probability = float(verified_answer.get("noul", 0.0))
+            probability = float(probability_value)
             probability = max(0.0, min(1.0, probability))
             verified = probability >= VERIFIED_PROBABILITY_THRESHOLD
 
-            raw_score = float(confidence_answer.get("score", 0.0))
+            raw_score = float(score_value)
             span = max(1, len(CONFIDENCE_LEVELS) - 1)
             score = int(round(max(0.0, min(float(span), raw_score)) / span * 100))
         except (TypeError, ValueError):

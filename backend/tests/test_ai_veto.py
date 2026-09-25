@@ -72,7 +72,7 @@ def test_evaluate_symbol_preserves_the_advisory_provider(monkeypatch):
 
     assert vetoed is False
     assert advisory_data["ai_provider"] == "typesafe"
-    assert advisory_data["ai_advice"] == "NEUTRAL"
+    assert advisory_data["ai_advice"] == "SUPPORTS_SHORT"
     assert advisory_data["ai_model"] == "jev-1.13.0"
     assert advisory_data["ai_observational_only"] is True
     assert advisory_data["ai_decision_critical"] is False

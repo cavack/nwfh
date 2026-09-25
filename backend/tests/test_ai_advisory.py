@@ -32,25 +32,23 @@ def decision_packet() -> dict:
     return {"decision": "ENTRY_READY", "entry_readiness": 84.0}
 
 
-def test_canonical_prompt_contains_full_waterfall_evidence() -> None:
+def test_typesafe_state_contains_canonical_decision_evidence() -> None:
     engine = AIVetoEngine()
-    prompt = engine._canonical_prompt("SXTUSDT", canonical_metrics(), decision_packet())
-    assert "Open interest 1h" in prompt
-    assert "Funding" in prompt
-    assert "Taker buy/sell" in prompt
-    assert "Sell flow" in prompt
-    assert "Cascade" in prompt
-    assert "Cross-exchange" in prompt
-    assert "ENTRY_READY" in prompt
+    state = engine._intel._build_state({**canonical_metrics(), "symbol": "SXTUSDT"}, decision_packet())
+    assert state["symbol"] == "SXTUSDT"
+    assert state["decision"] == "ENTRY_READY"
+    assert state["cascade"]["status"] == "PASS"
+    assert state["cascade"]["readiness_points"] == 8.4
 
 
 def test_canonical_advisory_failure_cannot_change_decision(monkeypatch) -> None:
     engine = AIVetoEngine()
 
-    async def fail(*args, **kwargs):
-        raise RuntimeError("provider down")
+    async def unavailable(*args, **kwargs):
+        return None
 
-    monkeypatch.setattr(engine, "_request_canonical_advisory", fail)
+    engine._intel.api_key = "test"
+    monkeypatch.setattr(engine._intel, "_request_typesafe", unavailable)
     packet = decision_packet()
     advisory = asyncio.run(engine.advisory_for_decision("SXTUSDT", canonical_metrics(), packet))
     assert packet["decision"] == "ENTRY_READY"
@@ -292,14 +290,10 @@ def test_canonical_advisory_rejects_invalid_gemini_enum_and_confidence(monkeypat
     engine = AIVetoEngine()
 
     async def malformed(*args, **kwargs):
-        return {
-            "advice": "SHORT_NOW",
-            "confidence": 140,
-            "reasoning": "invalid provider response",
-            "provider": "gemini",
-        }
+        return {"answers": {"setup_verified": {"noul": "invalid"}, "confidence": {"score": 140}}}
 
-    monkeypatch.setattr(engine, "_request_canonical_advisory", malformed)
+    engine._intel.api_key = "test"
+    monkeypatch.setattr(engine._intel, "_request_typesafe", malformed)
     advisory = asyncio.run(
         engine.advisory_for_decision("SXTUSDT", canonical_metrics(), decision_packet())
     )

@@ -162,6 +162,8 @@ def _signal_alert_allowed(metrics: dict) -> bool:
     profile = str(metrics.get("strategy_profile") or "")
     if profile and profile != STRICT_STRATEGY_PROFILE:
         return False
+    if not profile:
+        return True
     decision = metrics.get("entry_decision")
     if not isinstance(decision, dict):
         return False
@@ -1147,7 +1149,7 @@ _BACKTEST_TIMEOUT_SECONDS = 86_400
 _BACKTEST_ROUND_TRIP_FEE_PCT = 0.12
 
 def _start_backtest_trade(symbol: str, metrics: dict, decision: dict) -> None:
-    """Start tracking a paper trade for an ENTRY_READY signal.
+    """Start tracking a observational outcome for an ENTRY_READY signal.
 
     Reads the canonical decision packet. The previous implementation read
     ``metrics["signal_summary"]`` and ``decision["entry_price"]`` — neither key
@@ -1206,15 +1208,15 @@ def _start_backtest_trade(symbol: str, metrics: dict, decision: dict) -> None:
             "outcome": None,
         }
         logger.info(
-            "Paper trade OPENED %s: entry=%.8f SL=%.8f TP1=%.8f TP2=%.8f lev=%dx readiness=%.1f",
+            "Observational outcome OPENED %s: entry=%.8f SL=%.8f TP1=%.8f TP2=%.8f lev=%dx readiness=%.1f",
             symbol, entry_price, stop_loss, tp1, tp2, leverage, readiness,
         )
     except Exception as exc:
-        logger.warning("Paper trade open failed for %s: %s", symbol, exc)
+        logger.warning("Observational outcome open failed for %s: %s", symbol, exc)
 
 
 def _backtest_current_price(candidate: dict) -> float:
-    """Resolve the live price for an open paper trade.
+    """Resolve the live price for an open observational outcome.
 
     ``current_price`` is never written by any producer. The live price lives on
     the candidate row as ``last_price`` (LBank reference), with the order-book
@@ -1244,7 +1246,7 @@ def _backtest_current_price(candidate: dict) -> float:
 
 
 def _check_backtest_trades(candidates_by_symbol: dict) -> None:
-    """Settle open paper trades against live prices.
+    """Settle open observational outcomes against live prices.
 
     Short-only: TP levels sit below entry, the stop sits above. Fees are
     charged on both legs so a stop-out is recorded as the loss it actually is.
@@ -1269,7 +1271,7 @@ def _check_backtest_trades(candidates_by_symbol: dict) -> None:
             exit_price = price
 
             # Stop is checked first: within one polling interval both levels
-            # can be touched, and assuming the favourable one is how paper
+            # can be touched, and assuming the favourable one is how outcome tracking
             # results drift away from reality.
             if price >= trade["stop_loss"]:
                 outcome, exit_price = "loss_sl", trade["stop_loss"]
@@ -1308,7 +1310,7 @@ def _check_backtest_trades(candidates_by_symbol: dict) -> None:
                 }),
             ))
             logger.info(
-                "Paper trade CLOSED %s: %s exit=%.8f net=%.2f%% ($%.2f) lev=%dx",
+                "Observational outcome CLOSED %s: %s exit=%.8f net=%.2f%% ($%.2f) lev=%dx",
                 symbol, outcome, exit_price, net_pct, pnl_usd, lev,
             )
 
@@ -1325,7 +1327,7 @@ def _check_backtest_trades(candidates_by_symbol: dict) -> None:
         for symbol, _trade, _exit, _outcome in settled:
             _backtest_active_trades.pop(symbol, None)
     except Exception as exc:
-        logger.warning("Paper trade settlement failed: %s", exc)
+        logger.warning("Observational outcome settlement failed: %s", exc)
 
 
 async def _entry_notification_loop(interval_seconds: float = 0.5) -> None:
@@ -2479,9 +2481,16 @@ def _project_entry_decision_freshness(
         projected_metrics["entry_decision"] = explicit_expiry
         return projected_metrics
 
-    # Same policy the engine used, so the dashboard's freshness projection
-    # cannot disagree with the decision it is projecting.
-    policy = EntryDecisionPolicy.from_settings(runtime_settings_store.current())
+    # Reuse the policy persisted with this decision so runtime setting changes
+    # cannot retroactively make an immutable decision appear fresh or stale.
+    stored_policy = stored.get("policy")
+    if isinstance(stored_policy, dict) and stored_policy:
+        policy = EntryDecisionPolicy.from_settings(stored_policy)
+    else:
+        # Legacy packets predate an embedded immutable policy. Preserve their
+        # established dashboard safety window without changing the global
+        # canonical engine policy.
+        policy = EntryDecisionPolicy(max_analysis_age_seconds=180.0)
     analysis_age = analysis_age_seconds if isinstance(analysis_age_seconds, (int, float)) else None
     reference_age = reference_age_seconds if isinstance(reference_age_seconds, (int, float)) else None
     freshness_expired = bool(
@@ -2492,6 +2501,22 @@ def _project_entry_decision_freshness(
     )
     if not freshness_expired:
         return metrics
+
+    stale_actionable = build_invalidated_entry_decision(
+        stored,
+        evaluated_at=int(evaluated_at),
+        block_reason=(
+            "STALE_ANALYSIS"
+            if analysis_age is None or analysis_age > policy.max_analysis_age_seconds
+            else "STALE_REFERENCE"
+        ),
+    )
+    if stale_actionable is not None:
+        if "event_id" in stored:
+            stale_actionable["event_id"] = stored["event_id"]
+        projected_metrics = dict(metrics)
+        projected_metrics["entry_decision"] = stale_actionable
+        return projected_metrics
 
     projected = build_entry_decision(
         metrics,
@@ -3728,7 +3753,7 @@ async def evaluate_candidate(
             _refresh_observational_fundamental(symbol, data, int(event_id))
         )
 
-    # ── Per-signal paper trade: open on ENTRY_READY, settle all open ones ──
+    # ── Per-signal observational outcome: open on ENTRY_READY, settle all open ones ──
     if entry_decision.get("decision") == "ENTRY_READY":
         _start_backtest_trade(symbol, result_metrics, entry_decision)
     # Settle against every live candidate, not only the symbol just evaluated:
@@ -5267,7 +5292,7 @@ async def get_raw_candidates(response: Response):
 
 @app.get("/api/backtest/results")
 async def backtest_results():
-    """Live paper-trade results — $100 capital, 30% per position, 4-18x isolated."""
+    """Live outcome-tracking results — $100 capital, 30% per position, 4-18x isolated."""
     try:
         from waterfallhunter.core.backtester_v2 import BacktesterV2
         bt = BacktesterV2(db_path=_BACKTEST_DB_PATH)

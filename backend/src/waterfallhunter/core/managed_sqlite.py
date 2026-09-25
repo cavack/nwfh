@@ -48,23 +48,26 @@ def connect_managed_sqlite(
             factory=ManagedSQLiteConnection,
         )
         conn.execute("PRAGMA foreign_keys=ON")
-        busy_timeout_ms = max(0, int(timeout * 1000))
-        conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
         row = conn.execute("PRAGMA foreign_keys").fetchone()
         if row != (1,):
             raise ManagedSQLiteError("MANAGED_SQLITE_FOREIGN_KEYS_UNAVAILABLE")
-        busy_row = conn.execute("PRAGMA busy_timeout").fetchone()
-        if busy_row != (busy_timeout_ms,):
-            raise ManagedSQLiteError("MANAGED_SQLITE_BUSY_TIMEOUT_UNAVAILABLE")
+        busy_timeout_ms = max(0, int(timeout * 1000))
+        try:
+            conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+            busy_row = conn.execute("PRAGMA busy_timeout").fetchone()
+            if busy_row != (busy_timeout_ms,):
+                raise ManagedSQLiteError("MANAGED_SQLITE_BUSY_TIMEOUT_UNAVAILABLE")
+        except Exception as exc:
+            if isinstance(exc, ManagedSQLiteError):
+                raise
+            raise ManagedSQLiteError("MANAGED_SQLITE_BUSY_TIMEOUT_UNAVAILABLE") from exc
         return conn
     except Exception as exc:
         if conn is not None:
             conn.close()
         if isinstance(exc, ManagedSQLiteError):
             raise
-        raise ManagedSQLiteError(
-            "MANAGED_SQLITE_CONNECTION_INVARIANTS_UNAVAILABLE"
-        ) from exc
+        raise ManagedSQLiteError("MANAGED_SQLITE_FOREIGN_KEYS_UNAVAILABLE") from exc
 
 
 class _ManagedConnection:

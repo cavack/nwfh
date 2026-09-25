@@ -220,7 +220,7 @@ function DecisionCard({ symbol, candidate }: Readonly<{ symbol: string; candidat
         ) : null}
         {reasons.length > 0 ? <p className="mt-3 text-xs leading-5 text-slate-400">{reasons.join(" · ").replaceAll("_", " ")}</p> : null}
         <div className="mt-4 border-t border-slate-800 pt-3 text-xs text-slate-400">
-          <p className="flex items-start gap-2"><BrainCircuit size={14} className="mt-0.5 shrink-0" /><span><b className="text-slate-300">AI advisory:</b> {advisoryView.status}{advisoryView.confidence === undefined ? "" : ` · ${number(advisoryView.confidence, 0)}%`} · {advisoryView.reasoning}</span></p>
+          <div className="flex items-start gap-2"><BrainCircuit size={14} className="mt-0.5 shrink-0" /><div><p><b className="text-slate-300">Jev evidence check:</b> {advisoryView.question}</p><p>Answer: <b className="text-slate-200">{advisoryView.answer} — {advisoryView.status}</b>{advisoryView.confidence === undefined ? "" : ` · ${number(advisoryView.confidence, 0)}%${advisoryView.confidenceLabel ? ` · ${advisoryView.confidenceLabel}` : ""}`}</p><p>Basis: {advisoryView.reasoning}</p><p className="text-slate-500">{advisoryView.provider} · {advisoryView.model} · observational only; engine decision unchanged</p></div></div>
         </div>
       </div>
     </article>

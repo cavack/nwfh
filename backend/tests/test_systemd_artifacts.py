@@ -30,7 +30,8 @@ def test_waterfallhunter_systemd_unit_contract() -> None:
 def test_healthcheck_timer_is_bounded_and_persistent() -> None:
     service = (ROOT / "deploy/systemd/waterfallhunter-healthcheck.service").read_text(encoding="utf-8")
     timer = (ROOT / "deploy/systemd/waterfallhunter-healthcheck.timer").read_text(encoding="utf-8")
-    assert "verify_production_cutover.py --health-only --recover" in service
+    assert "scripts/healthcheck_simple.py" in service
+    assert "verify_production_cutover.py --health-only --recover" not in service
     assert "OnUnitActiveSec=60s" in timer
     assert "Persistent=true" in timer
     assert "Restart=always" not in service
@@ -39,7 +40,9 @@ def test_healthcheck_timer_is_bounded_and_persistent() -> None:
 def test_nginx_template_exposes_only_frontend_loopback() -> None:
     text = (ROOT / "deploy/nginx/waterfallhunter.conf").read_text(encoding="utf-8")
     assert "proxy_pass http://127.0.0.1:3000;" in text
-    assert "127.0.0.1:8000" not in text
+    assert text.count("proxy_pass http://127.0.0.1:8000;") == 3
+    for endpoint in ("/api/health", "/livez", "/readyz"):
+        assert f"location = {endpoint}" in text
     assert "127.0.0.1:9090" not in text
     assert "127.0.0.1:3001" not in text
 

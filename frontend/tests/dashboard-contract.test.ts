@@ -132,10 +132,17 @@ assert.equal(tradePlanAvailable({ entry_price: 1 }), false);
 
 assert.deepEqual(advisoryPresentation({
   ai_advice: "PENDING", ai_confidence: 0, ai_reasoning: "queued",
-}), { status: "PENDING", reasoning: "queued" });
+}), {
+  status: "PENDING",
+  question: "Does the supplied evidence support a valid short setup?",
+  answer: "—",
+  reasoning: "queued",
+  provider: "none",
+  model: "none",
+});
 assert.deepEqual(advisoryPresentation({
-  ai_advice: "AVOID", ai_confidence: 82, ai_reasoning: "late cascade",
-}), { status: "AVOID", confidence: 82, reasoning: "late cascade" });
+  ai_advice: "DOES_NOT_SUPPORT_SHORT", ai_answer_yes: false, ai_confidence: 82, ai_confidence_label: "Solid support", ai_reasoning: "late cascade", ai_provider: "typesafe", ai_model: "jev-test",
+}), { status: "DOES_NOT_SUPPORT_SHORT", question: "Does the supplied evidence support a valid short setup?", answer: "NO", confidence: 82, confidenceLabel: "Solid support", reasoning: "late cascade", provider: "typesafe", model: "jev-test" });
 
 assert.deepEqual(
   canonicalLeverageAdvisory({}, { leverage_advisory: { status: "NOT_RECOMMENDED", leverage: null, policy_version: "adaptive_signal_leverage_v1" } }),

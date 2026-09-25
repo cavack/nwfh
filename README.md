@@ -17,7 +17,7 @@ LBank API → Catalog (149 symbols) → Multi-Source Scanner → Cascade Intelli
 | Cascade Intelligence | A secondary flow/liquidity confirmation: trade flow (3), derivatives (3), liquidity (2), liquidation flow (2). PASS needs at least 4 available points and 50% of those points. It overlaps with primary order-flow, derivatives and execution evidence, so it is a configurable confirmation gate, not independent proof. |
 | Entry Decision Engine | Produces ENTRY_READY / FORMING / LATE / NO_TRADE decisions |
 | AI Advisory | TypeSafe System One (Jev) — observational only, no veto power |
-| Paper-trade recorder | Opens on every canonical ENTRY_READY; settles against live LBank prices at stop, targets, or a 24h timeout. It charges round-trip fees and is not a validated performance claim. |
+| Outcome recorder | Opens on every canonical ENTRY_READY; settles against live LBank prices at stop, targets, or a 24h timeout. It charges round-trip fees and is not a validated performance claim. |
 | Risk Manager | Dynamic 4x–18x **isolated** leverage advisory based on canonical readiness, stop distance, ATR, friction and execution suitability |
 | Telegram Bot | Signal alerts + /signals, /health, /top, /help commands |
 
@@ -26,7 +26,7 @@ LBank API → Catalog (149 symbols) → Multi-Source Scanner → Cascade Intelli
 | Level | Score | Cascade | Description |
 |-------|-------|---------|-------------|
 | ENTRY_READY | ≥70 | PASS | Ready to enter — Telegram alert sent |
-| FORMING | 55-69 | PASS | Forming — visible on dashboard |
+| FORMING | >= 55 and < 70 | PASS | Forming — visible on dashboard |
 | NO_TRADE | <55 or FAIL | — | Conditions not met |
 | LATE | — | — | Signal too late — do not chase |
 | INVALIDATED | — | — | Structure broken |
@@ -55,8 +55,10 @@ contribution.
 
 The current policy is operator-adjustable from the protected dashboard. Every
 change applies to new signals only and is recorded with its prior value. The
-shipped defaults are ENTRY_READY >=70, FORMING >=55, 55% evidence coverage,
+shipped defaults are ENTRY_READY >= 70, FORMING >= 55, 55% evidence coverage,
 2.5 ATR anti-chase, 600s analysis freshness and 60s reference freshness.
+
+Anti-Chase applies only after readiness classification and does not turn sub-`FORMING` evidence into `LATE`; `late_origin` records whether a terminal `LATE` outcome came from anti-chase or lifecycle exhaustion.
 
 ## Observational Research
 
@@ -76,8 +78,8 @@ signal: free Fundamental data and decision/outcome calibration data.
   state was not historically captured. Those are research hypotheses, not live
   gate changes.
 
-There is deliberately no performance table here. Six paper trades are not a
-statistical result. Live outcomes and paper-trade metrics are visible in the
+There is deliberately no performance table here. Six observed outcomes are not a
+statistical result. Live outcomes and outcome-tracking metrics are visible in the
 protected dashboard, and performance claims require a recorded replay,
 walk-forward and holdout protocol.
 

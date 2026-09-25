@@ -74,12 +74,11 @@ def test_decision_terminal_renders_when_active_candidate_set_is_empty() -> None:
     terminal_call = re.search(
         r"<DecisionTerminal\s+terminal=\{data\.decision_terminal\}\s+"
         r"candidates=\{data\.candidates as Record<string, Candidate>\}"
-        r"(?:\s+nowSeconds=\{freshnessNow\})?\s*/>",
+        r"(?:\s+nowSeconds=\{nowSeconds\})?\s*/>",
         page,
     )
     assert terminal_call is not None
-    prefix = page[:terminal_call.start()][-180:]
-    assert "data !== null" in prefix
+    assert "data === null ? (" in page
 
 
 def test_systemd_install_is_late_and_rollback_restores_host_integration() -> None:
@@ -174,8 +173,8 @@ def test_collapsed_research_diagnostics_are_lazy_mounted() -> None:
     details = page.split('<details id="research"', maxsplit=1)[1]
     details = details.split('</details>', maxsplit=1)[0]
     assert "onToggle={(event) => setResearchOpen(event.currentTarget.open)}" in details
-    assert "{researchOpen ? (" in details
-    conditional = details.split("{researchOpen ? (", maxsplit=1)[1]
+    assert "{researchOpen && (" in details
+    conditional = details.split("{researchOpen && (", maxsplit=1)[1]
     assert "<OutcomeEvidence />" in conditional
     assert "<RecentSignals />" in conditional
     assert "<HistoricalOutcomes />" in conditional

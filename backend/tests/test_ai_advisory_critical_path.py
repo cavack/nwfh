@@ -119,21 +119,13 @@ def test_trigger_persistence_does_not_wait_for_gemini_advisory(monkeypatch) -> N
         release_provider = asyncio.Event()
         persisted = asyncio.Event()
 
-        async def slow_gemini(*args, **kwargs):
+        async def slow_typesafe(*args, **kwargs):
             provider_started.set()
             await release_provider.wait()
-            return {
-                "advice": "NEUTRAL",
-                "confidence": 40,
-                "reasoning": "observational only",
-                "provider": "gemini",
-            }
+            return {"answers": {"setup_verified": {"noul": 0.5}, "confidence": {"score": 2}}}
 
-        monkeypatch.setattr(
-            main.ai_veto,
-            "_get_gemini_opinion",
-            slow_gemini,
-        )
+        main.ai_veto._intel.api_key = "test"
+        monkeypatch.setattr(main.ai_veto._intel, "_request_typesafe", slow_typesafe)
 
         def persist_trigger(*args, **kwargs):
             persisted.set()
