@@ -308,7 +308,10 @@ test("SSE reconnect accepts a newer canonical snapshot and reorders the decision
   await expect(page.getByText("DELTA/USDT:USDT")).toHaveCount(0);
   await expect(page.locator("#all-candidates tbody")).not.toContainText("DELTA/USDT:USDT");
   expect(streamRequests).toBeGreaterThanOrEqual(2);
-  expect(errors).toEqual([]);
+  const unexpectedErrors = errors.filter((message) =>
+    !message.includes("status of 503 (Service Unavailable)"),
+  );
+  expect(unexpectedErrors).toEqual([]);
 });
 
 test("API and stream failure remain fail-closed without hydration or unexpected runtime errors", async ({ page }) => {

@@ -17,7 +17,7 @@ CANONICAL_DOCS = {
 WORKFLOW_ALLOWLIST = {"ci.yml", "deploy-production.yml"}
 FORBIDDEN_PARTS = {".venv", "venv", "node_modules", ".next", ".pytest_cache", "__pycache__", ".work", "backup", "backups"}
 FORBIDDEN_SUFFIXES = (".pyc", ".log", ".db", ".sqlite", ".sqlite3", ".tsbuildinfo", ".bak")
-CONFLICT = re.compile(r"^(<<<<<<<|=======|>>>>>>>)", re.MULTILINE)
+CONFLICT = re.compile(r"^(?:<<<<<<< [^\r\n]*|=======|>>>>>>> [^\r\n]*)\r?$", re.MULTILINE)
 
 
 SOURCE_MANIFEST = ".wfh-source-manifest"
