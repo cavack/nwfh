@@ -563,11 +563,11 @@ function RecentDecisionChanges({ value }: Readonly<{ value: unknown }>) {
           const reason = typeof row.transition_reason === "string"
             ? row.transition_reason
             : blocks[0] ?? reasons[0] ?? "—";
-          const previous = text(row.previous_decision).replaceAll("_", " ");
-          const current = text(row.decision, "UNAVAILABLE").replaceAll("_", " ");
-          const symbol = text(row.symbol);
+          const previous = (scalarText(row.previous_decision) ?? "—").replaceAll("_", " ");
+          const current = (scalarText(row.decision) ?? "UNAVAILABLE").replaceAll("_", " ");
+          const symbol = scalarText(row.symbol) ?? "—";
           const eventKey = scalarText(row.event_id)
-            ?? `${text(row.symbol, "unknown")}-${scalarText(row.event_at) ?? index}`;
+            ?? `${scalarText(row.symbol) ?? "unknown"}-${scalarText(row.event_at) ?? index}`;
           return <div key={eventKey} className="grid gap-1 rounded-lg border border-slate-800 bg-slate-950/35 px-3 py-2.5 sm:grid-cols-[10rem_1fr_auto] sm:items-center sm:gap-3">
             <time className="text-[11px] text-slate-500">{timeText(row.event_at ?? row.evaluated_at)}</time>
             <div className="min-w-0"><p className="font-mono text-sm text-sky-300">{symbol}</p><p className="mt-0.5 truncate text-xs text-slate-500" title={reason}>{reason.replaceAll("_", " ")}</p></div>

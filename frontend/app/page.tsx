@@ -109,7 +109,10 @@ function SignalCard({ symbol, candidate }: Readonly<{ symbol: string; candidate:
 
   const es = ed.evidence_summary as Record<string, unknown> | undefined;
   const cascade = es?.cascade as Record<string, unknown> | undefined;
-  const cross = es?.cross_exchange_confirmed as boolean | undefined;
+  const cross = typeof es?.cross_exchange_confirmed === "boolean"
+    ? es.cross_exchange_confirmed
+    : undefined;
+  const cascadeStatus = typeof cascade?.status === "string" ? cascade.status : undefined;
 
   const ai = getMetrics(candidate)?.ai_advisory as Record<string, unknown> | undefined;
   const fundamental = getMetrics(candidate)?.fundamental_observational as Record<string, unknown> | undefined;
@@ -199,12 +202,12 @@ function SignalCard({ symbol, candidate }: Readonly<{ symbol: string; candidate:
             {cascade && (
               <span
                 className={`rounded px-2 py-0.5 font-mono ${
-                  String(cascade.status) === "PASS"
+                  cascadeStatus === "PASS"
                     ? "bg-emerald-500/10 text-emerald-400"
                     : "bg-rose-500/10 text-rose-400"
                 }`}
               >
-                {String(cascade.status ?? "?")}
+                {cascadeStatus ?? "—"}
               </span>
             )}
             {hasAI && (
