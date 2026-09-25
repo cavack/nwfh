@@ -117,9 +117,8 @@ function SignalCard({ symbol, candidate }: Readonly<{ symbol: string; candidate:
   const fundamentalScore = typeof fundamental?.fundamental_score === "number"
     ? fundamental.fundamental_score
     : undefined;
-  // The engine emits NEUTRAL | AVOID | UNAVAILABLE | PENDING. Anything else
-  // means the advisory has not resolved yet.
-  const hasAI = aiAdvice === "NEUTRAL" || aiAdvice === "AVOID";
+  // Jev answers one typed binary evidence question; it never changes the engine decision.
+  const hasAI = aiAdvice === "SUPPORTS_SHORT" || aiAdvice === "DOES_NOT_SUPPORT_SHORT";
 
   const actionable = ACTIONABLE.has(decision);
   const tone = actionable
@@ -211,12 +210,12 @@ function SignalCard({ symbol, candidate }: Readonly<{ symbol: string; candidate:
             {hasAI && (
               <span
                 className={`rounded px-2 py-0.5 font-mono ${
-                  aiAdvice === "AVOID"
+                  aiAdvice === "DOES_NOT_SUPPORT_SHORT"
                     ? "bg-rose-500/10 text-rose-400"
-                    : "bg-slate-800/60 text-slate-300"
+                    : "bg-emerald-500/10 text-emerald-400"
                 }`}
               >
-                AI {aiAdvice}
+                Jev {aiAdvice === "SUPPORTS_SHORT" ? "YES" : "NO"}
               </span>
             )}
             {fundamentalScore !== undefined && (
@@ -349,7 +348,7 @@ function TopCandidates({
   );
 }
 
-/* ─── Paper-trade results ─── */
+/* ─── Observational outcome tracking ─── */
 function PaperTradeResults() {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
 
@@ -376,10 +375,10 @@ function PaperTradeResults() {
     return (
       <section>
         <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-          <DollarSign size={13} className="mr-1.5 inline text-amber-400" /> Paper trades
+          <DollarSign size={13} className="mr-1.5 inline text-amber-400" /> Outcome tracking
         </h2>
         <p className="rounded-lg border border-slate-800/60 bg-slate-900/50 p-3 text-[11px] text-slate-500">
-          No settled paper trades yet. Each ENTRY_READY signal opens one and settles it against
+          No settled observational outcomes yet. Each ENTRY_READY signal is tracked against
           live prices at its stop, targets, or the 24h timeout.
         </p>
       </section>
@@ -397,7 +396,7 @@ function PaperTradeResults() {
   return (
     <section>
       <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-        <DollarSign size={13} className="mr-1.5 inline text-amber-400" /> Paper trades · $100 ·
+        <DollarSign size={13} className="mr-1.5 inline text-amber-400" /> Outcome tracking · $100 ·
         4–18x isolated
       </h2>
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
@@ -591,6 +590,9 @@ export default function Dashboard() {
             <p className="hidden text-[10px] text-slate-500 sm:block">Signal Terminal</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <span className="hidden rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-200 sm:inline-flex">
+              SIGNAL_ONLY · LIVE TRADING OFF
+            </span>
             {generatedAt !== null && (
               <time className="hidden font-mono text-[10px] text-slate-600 md:inline">
                 {new Date(generatedAt).toLocaleTimeString()}
@@ -667,7 +669,7 @@ export default function Dashboard() {
             {/* ─── 3. Top candidates ─── */}
             <TopCandidates rows={rows} excludeSymbols={signalSymbols} />
 
-            {/* ─── 4. Paper trades ─── */}
+            {/* ─── 4. Observational outcomes ─── */}
             <PaperTradeResults />
 
             {/* ─── 5. Decision terminal ─── */}
@@ -682,7 +684,7 @@ export default function Dashboard() {
               <div className="mt-4">
                 <DecisionTerminal
                   terminal={data.decision_terminal}
-                  candidates={candidates}
+                  candidates={data.candidates as Record<string, Candidate>}
                   nowSeconds={nowSeconds}
                 />
               </div>
@@ -711,10 +713,10 @@ export default function Dashboard() {
             </details>
 
             {/* ─── 7. Research ─── */}
-            <details
+            <details id="research"
               className="overflow-hidden rounded-xl border border-slate-800/40 bg-slate-950/40"
               open={researchOpen}
-              onToggle={(e) => setResearchOpen(e.currentTarget.open)}
+              onToggle={(event) => setResearchOpen(event.currentTarget.open)}
             >
               <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-xs font-semibold text-slate-500">
                 <span className="flex items-center gap-2">

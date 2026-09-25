@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     backtester_initial_capital: float = 200.0
     backtester_risk_per_trade: float = 0.02
     backtester_db_path: str = "/app/data/backtest.db"
-    # Live per-signal paper trading. The path was previously hardcoded in
+    # Live per-signal observational outcome tracking. The path was previously hardcoded in
     # three places (main.py, backtester_v2.py, telegram_enhanced.py).
     backtester_v2_db_path: str = "/app/data/backtest_v2.db"
 

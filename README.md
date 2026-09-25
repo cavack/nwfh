@@ -17,7 +17,7 @@ LBank API → Catalog (149 symbols) → Multi-Source Scanner → Cascade Intelli
 | Cascade Intelligence | A secondary flow/liquidity confirmation: trade flow (3), derivatives (3), liquidity (2), liquidation flow (2). PASS needs at least 4 available points and 50% of those points. It overlaps with primary order-flow, derivatives and execution evidence, so it is a configurable confirmation gate, not independent proof. |
 | Entry Decision Engine | Produces ENTRY_READY / FORMING / LATE / NO_TRADE decisions |
 | AI Advisory | TypeSafe System One (Jev) — observational only, no veto power |
-| Paper-trade recorder | Opens on every canonical ENTRY_READY; settles against live LBank prices at stop, targets, or a 24h timeout. It charges round-trip fees and is not a validated performance claim. |
+| Outcome recorder | Opens on every canonical ENTRY_READY; settles against live LBank prices at stop, targets, or a 24h timeout. It charges round-trip fees and is not a validated performance claim. |
 | Risk Manager | Dynamic 4x–18x **isolated** leverage advisory based on canonical readiness, stop distance, ATR, friction and execution suitability |
 | Telegram Bot | Signal alerts + /signals, /health, /top, /help commands |
 
@@ -76,8 +76,8 @@ signal: free Fundamental data and decision/outcome calibration data.
   state was not historically captured. Those are research hypotheses, not live
   gate changes.
 
-There is deliberately no performance table here. Six paper trades are not a
-statistical result. Live outcomes and paper-trade metrics are visible in the
+There is deliberately no performance table here. Six observed outcomes are not a
+statistical result. Live outcomes and outcome-tracking metrics are visible in the
 protected dashboard, and performance claims require a recorded replay,
 walk-forward and holdout protocol.
 

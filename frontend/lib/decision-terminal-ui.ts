@@ -87,21 +87,25 @@ export function rawLeveragePresentation(metricsValue: unknown): string {
 
 export function advisoryPresentation(value: unknown): {
   status: string;
+  question: string;
+  answer: string;
   confidence?: number;
+  confidenceLabel?: string;
   reasoning: string;
+  provider: string;
+  model: string;
 } {
   const advisory = record(value);
-  const status = typeof advisory.ai_advice === "string" && advisory.ai_advice
-    ? advisory.ai_advice
-    : "UNAVAILABLE";
-  const reasoning = typeof advisory.ai_reasoning === "string" && advisory.ai_reasoning
-    ? advisory.ai_reasoning
-    : "No advisory available";
+  const status = typeof advisory.ai_advice === "string" && advisory.ai_advice ? advisory.ai_advice : "UNAVAILABLE";
+  const question = typeof advisory.ai_question === "string" && advisory.ai_question ? advisory.ai_question : "Does the supplied evidence support a valid short setup?";
+  const answer = advisory.ai_answer_yes === true ? "YES" : advisory.ai_answer_yes === false ? "NO" : "—";
+  const reasoning = typeof advisory.ai_reasoning === "string" && advisory.ai_reasoning ? advisory.ai_reasoning : "No advisory available";
   const confidence = finite(advisory.ai_confidence);
-  if (["PENDING", "UNAVAILABLE"].includes(status.toUpperCase()) || confidence === undefined) {
-    return { status, reasoning };
-  }
-  return { status, confidence, reasoning };
+  const confidenceLabel = typeof advisory.ai_confidence_label === "string" ? advisory.ai_confidence_label : undefined;
+  const provider = typeof advisory.ai_provider === "string" ? advisory.ai_provider : "none";
+  const model = typeof advisory.ai_model === "string" ? advisory.ai_model : "none";
+  if (["PENDING", "UNAVAILABLE"].includes(status.toUpperCase()) || confidence === undefined) return { status, question, answer, reasoning, provider, model };
+  return { status, question, answer, confidence, confidenceLabel, reasoning, provider, model };
 }
 
 function advancingAge(snapshotAge: unknown, observedAt: unknown, nowSeconds?: number): number | undefined {

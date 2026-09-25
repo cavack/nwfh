@@ -73,16 +73,23 @@ class AICascadeOpinion:
         emitted so that every consumer keeps working.
         """
         available = self.provider == "typesafe"
+        confidence_index = min(
+            len(CONFIDENCE_LEVELS) - 1,
+            max(0, round(int(self.score) / 100 * (len(CONFIDENCE_LEVELS) - 1))),
+        )
         return {
             "observational_only": True,
             "decision_mutated": False,
             "ai_observational_only": True,
             "ai_decision_critical": False,
             "ai_status": "AVAILABLE" if available else "UNAVAILABLE",
-            "ai_advice": ("NEUTRAL" if self.verified else "AVOID")
+            "ai_question": "Does the supplied evidence support a valid short setup?",
+            "ai_advice": ("SUPPORTS_SHORT" if self.verified else "DOES_NOT_SUPPORT_SHORT")
             if available
             else "UNAVAILABLE",
+            "ai_answer_yes": bool(self.verified) if available else None,
             "ai_confidence": int(self.score) if available else 0,
+            "ai_confidence_label": CONFIDENCE_LEVELS[confidence_index] if available else "Unavailable",
             "ai_reasoning": str(self.note),
             "ai_provider": self.provider if available else "none",
             "ai_model": self.model if available else "none",

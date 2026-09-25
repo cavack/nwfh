@@ -471,7 +471,7 @@ def _db_path(settings: Any) -> Path | None:
 
 
 def _backtest_db_path(settings: Any) -> str:
-    """Resolve the paper-trade database from settings, not a literal."""
+    """Resolve the outcome-tracking database from settings, not a literal."""
     return str(
         getattr(settings, "backtester_v2_db_path", None)
         or os.getenv("WFH_BACKTEST_V2_DB_PATH")
@@ -917,7 +917,7 @@ class EnhancedTelegramBot:
         try:
             import sqlite3
             # Read-only: a reporting command must never be able to write to,
-            # or lock, the live paper-trade ledger.
+            # or lock, the live outcome-tracking ledger.
             bt = sqlite3.connect(
                 f"file:{_backtest_db_path(self.settings)}?mode=ro", uri=True, timeout=5.0
             )

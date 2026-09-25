@@ -35,10 +35,16 @@ _DECISION_FIELDS = (
 )
 _AI_FIELDS = (
     "ai_status",
+    "ai_question",
     "ai_advice",
+    "ai_answer_yes",
     "ai_confidence",
+    "ai_confidence_label",
     "ai_reasoning",
     "ai_provider",
+    "ai_model",
+    "observational_only",
+    "decision_mutated",
 )
 _FUNDAMENTAL_FIELDS = (
     "fundamental_score",
