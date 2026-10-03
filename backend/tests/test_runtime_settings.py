@@ -156,3 +156,35 @@ def test_describe_exposes_schema_and_modified_flags(store):
     assert fields["entry_ready_minimum"]["default"] == 72.0
     assert fields["forming_minimum"]["modified"] is False
     assert fields["gate_cascade_required"]["kind"] == "toggle"
+
+
+def test_shipped_defaults_saved_unchanged_are_not_labelled_operator_tuned() -> None:
+    """Writing the defaults back must not relabel the policy.
+
+    An operator who saves every value unchanged - or a reset to shipped
+    defaults - leaves the effective policy identical to the stock one. An
+    immutable decision packet must not claim an operator-tuned policy produced
+    it when every threshold still equals the shipped default.
+    """
+    from waterfallhunter.core.entry_decision import EntryDecisionPolicy
+    from waterfallhunter.core.runtime_settings import DEFAULTS
+
+    stock = EntryDecisionPolicy()
+    assert stock.version != "entry_policy_v2_operator_tuned"
+
+    saved = EntryDecisionPolicy.from_settings(dict(DEFAULTS))
+    assert saved == stock
+    assert saved.version == stock.version
+
+
+def test_a_real_change_is_still_labelled_operator_tuned() -> None:
+    """A genuine operator change must still be visible in the packet."""
+    from waterfallhunter.core.entry_decision import EntryDecisionPolicy
+    from waterfallhunter.core.runtime_settings import DEFAULTS
+
+    changed = dict(DEFAULTS)
+    changed["entry_ready_minimum"] = 68.0
+    tuned = EntryDecisionPolicy.from_settings(changed)
+
+    assert tuned.entry_ready_minimum == 68.0
+    assert tuned.version == "entry_policy_v2_operator_tuned"

@@ -55,7 +55,17 @@ class EntryDecisionPolicy:
                     kwargs[key] = number
         if not kwargs:
             return cls()
-        # Mark the policy so a persisted packet shows it was not the stock one.
+        # Mark the policy so a persisted packet shows it was not the stock one -
+        # but only when a value actually differs. Writing the shipped defaults
+        # back unchanged, or a reset to shipped defaults, leaves the effective
+        # policy identical to the stock one, and an immutable decision packet
+        # must not claim it was produced by an operator-tuned policy when it
+        # was not. This happened in Production: after a reset to shipped
+        # defaults every packet still recorded `entry_policy_v2_operator_tuned`
+        # while every threshold equalled the shipped default.
+        stock = cls()
+        if all(getattr(stock, key) == value for key, value in kwargs.items()):
+            return stock
         return cls(version="entry_policy_v2_operator_tuned", **kwargs)
 
 
