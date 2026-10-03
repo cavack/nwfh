@@ -129,3 +129,109 @@ def test_liquidation_observation_within_shared_sixty_second_window_is_fresh() ->
     packet = build_cascade_evidence(metrics, evaluated_at=1_788_000_055)
     assert packet["components"]["liquidations"]["available"] is True
     assert packet["maximum_available"] == 10.0
+
+
+# --- Change F tests: multi-factor long-crowding classification -----------
+
+from waterfallhunter.core.cascade_intelligence import (
+    LONG_CROWDING_UNCONFIRMED,
+    LONG_HEAVY_MARKET,
+    LONGS_TRAPPED_FOR_SHORT,
+    NOT_LONG_HEAVY,
+    classify_long_crowding,
+)
+
+
+def _crowding_metrics(**overrides) -> dict:
+    derivatives = {
+        "available": True,
+        "funding_rate": 0.0002,
+        "funding_percentile": 0.6,
+        "oi_change_1h_pct": 0.1,
+        "taker_buy_sell_ratio": 0.9,
+        "taker_ratio_change_1h": -0.1,
+        "top_trader_long_short_ratio": 2.2,
+    }
+    derivatives.update(overrides)
+    return {"derivatives": derivatives}
+
+
+def test_ratio_alone_never_yields_trapped_longs() -> None:
+    result = classify_long_crowding(_crowding_metrics())
+    assert result["classification"] in (LONG_HEAVY_MARKET, LONG_CROWDING_UNCONFIRMED)
+    assert result["classification"] != LONGS_TRAPPED_FOR_SHORT
+
+
+def test_ratio_below_threshold_is_not_long_heavy() -> None:
+    result = classify_long_crowding(_crowding_metrics(top_trader_long_short_ratio=1.1))
+    assert result["classification"] == NOT_LONG_HEAVY
+
+
+def test_ratio_plus_structure_plus_break_plus_corroboration_confirms_trapped_longs() -> None:
+    metrics = _crowding_metrics(oi_change_1h_pct=-0.8)
+    result = classify_long_crowding(
+        metrics,
+        bearish_15m_structure=True,
+        support_break_close=True,
+    )
+    assert result["classification"] == LONGS_TRAPPED_FOR_SHORT
+    assert "OI_UNWINDING_CONSISTENT" in result["corroboration_reason_codes"]
+
+
+def test_structure_and_break_without_any_corroboration_is_unconfirmed() -> None:
+    # Ratio elevated, structure+break confirmed, but no corroborating
+    # OI/funding/liquidation evidence -- must not be enough on its own.
+    metrics = _crowding_metrics(oi_change_1h_pct=0.1, funding_percentile=0.5)
+    result = classify_long_crowding(
+        metrics,
+        bearish_15m_structure=True,
+        support_break_close=True,
+    )
+    assert result["classification"] == LONG_CROWDING_UNCONFIRMED
+    assert result["classification"] != LONGS_TRAPPED_FOR_SHORT
+
+
+def test_negative_funding_alone_does_not_qualify_as_trapped_long_confirmation() -> None:
+    metrics = _crowding_metrics(funding_rate=-0.0003, funding_percentile=0.5, oi_change_1h_pct=0.1)
+    result = classify_long_crowding(metrics)  # no structure/break passed in, none importable
+    assert result["classification"] != LONGS_TRAPPED_FOR_SHORT
+    assert result["classification"] == LONG_HEAVY_MARKET
+    assert result["short_squeeze_risk_flag"] is True
+    assert "OI_UNWINDING_CONSISTENT" not in result["corroboration_reason_codes"]
+    assert "FUNDING_OVERHEATED_LONG" not in result["corroboration_reason_codes"]
+
+
+def test_missing_oi_and_funding_data_is_not_positive_evidence() -> None:
+    metrics = _crowding_metrics(oi_change_1h_pct=None, funding_percentile=None)
+    result = classify_long_crowding(
+        metrics,
+        bearish_15m_structure=True,
+        support_break_close=True,
+    )
+    # Missing data must not silently corroborate -- with no other evidence
+    # this stays UNCONFIRMED at best, never trapped-for-short.
+    assert result["classification"] in (LONG_HEAVY_MARKET, LONG_CROWDING_UNCONFIRMED)
+    assert result["classification"] != LONGS_TRAPPED_FOR_SHORT
+    assert result["corroboration_reason_codes"] == []
+
+
+def test_liquidation_dominance_can_serve_as_the_corroborating_condition() -> None:
+    metrics = _crowding_metrics(oi_change_1h_pct=0.1, funding_percentile=0.5)
+    metrics["liquidation_flow"] = {
+        "available": True,
+        "long_liquidation_notional_1m": 400_000.0,
+        "short_liquidation_notional_1m": 30_000.0,
+    }
+    result = classify_long_crowding(
+        metrics,
+        bearish_15m_structure=True,
+        support_break_close=True,
+    )
+    assert result["classification"] == LONGS_TRAPPED_FOR_SHORT
+    assert "LONG_LIQUIDATIONS_DOMINANT" in result["corroboration_reason_codes"]
+
+
+def test_derivatives_unavailable_stays_unconfirmed_and_never_crashes() -> None:
+    result = classify_long_crowding({"derivatives": {"available": False}})
+    assert result["available"] is False
+    assert result["classification"] == LONG_CROWDING_UNCONFIRMED

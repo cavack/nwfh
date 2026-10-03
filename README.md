@@ -55,7 +55,7 @@ contribution.
 
 The current policy is operator-adjustable from the protected dashboard. Every
 change applies to new signals only and is recorded with its prior value. The
-shipped defaults are ENTRY_READY >= 70, FORMING >= 55, 55% evidence coverage,
+shipped defaults are ENTRY_READY >= 72, FORMING >= 55, 55% evidence coverage,
 2.5 ATR anti-chase, 600s analysis freshness and 60s reference freshness.
 
 Anti-Chase applies only after readiness classification and does not turn sub-`FORMING` evidence into `LATE`; `late_origin` records whether a terminal `LATE` outcome came from anti-chase or lifecycle exhaustion.

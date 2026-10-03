@@ -51,14 +51,14 @@ def test_apply_records_every_field_in_history(store):
     history = store.history()
     assert len(history) == 2
     by_key = {row["setting_key"]: row for row in history}
-    assert by_key["entry_ready_minimum"]["previous_value"] == 70.0
+    assert by_key["entry_ready_minimum"]["previous_value"] == 72.0
     assert by_key["entry_ready_minimum"]["new_value"] == 62.5
     assert by_key["entry_ready_minimum"]["changed_by"] == "operator"
     assert by_key["entry_ready_minimum"]["note"] == "loosening for a test"
 
 
 def test_unchanged_values_are_not_written_to_history(store):
-    store.apply({"entry_ready_minimum": 70.0}, actor="operator")
+    store.apply({"entry_ready_minimum": 72.0}, actor="operator")
     assert store.history() == []
 
 
@@ -75,6 +75,8 @@ def test_settings_change_the_decision_a_packet_receives(store):
         execution_ok=True,
         cross_ok=False,
         trade_plan_ok=True,
+        lifecycle_ok=True,
+        ai_gate_ok=True,
     )
     # Stock policy: readiness below 70 and no cross-exchange confirmation.
     assert _base_decision(**packet, policy=EntryDecisionPolicy()) == "FORMING"
@@ -101,6 +103,8 @@ def test_disabling_a_gate_stops_it_hard_blocking(store):
         execution_ok=True,
         cross_ok=True,
         trade_plan_ok=True,
+        lifecycle_ok=True,
+        ai_gate_ok=True,
     )
     assert _base_decision(**packet, policy=EntryDecisionPolicy()) == "NO_TRADE"
 
@@ -149,6 +153,6 @@ def test_describe_exposes_schema_and_modified_flags(store):
     }
     assert fields["entry_ready_minimum"]["modified"] is True
     assert fields["entry_ready_minimum"]["value"] == 62.5
-    assert fields["entry_ready_minimum"]["default"] == 70.0
+    assert fields["entry_ready_minimum"]["default"] == 72.0
     assert fields["forming_minimum"]["modified"] is False
     assert fields["gate_cascade_required"]["kind"] == "toggle"

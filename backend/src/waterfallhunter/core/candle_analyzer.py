@@ -644,3 +644,266 @@ class MultiTimeframeAnalyzer:
                 "confirmation_ohlcv_captured": bool(confirmation_ohlcv),
             },
         }
+
+
+# ---------------------------------------------------------------------------
+# Deterministic 15-minute bearish structure gate (Change D) and absorption
+# detection (Change E).
+#
+# These are standalone, pure, deterministic functions intended to be
+# imported and consumed by entry_decision.py's short-entry gate. They are
+# NOT wired into entry_decision.py here -- that wiring is done separately.
+# They only ever look at already-CLOSED candles (no open/incomplete candle,
+# no repainting, no look-ahead) and fail closed (available=False) whenever
+# the input data is insufficient, gapped, or otherwise untrustworthy.
+# ---------------------------------------------------------------------------
+
+_STRUCTURE_TIMEFRAME_MS_15M = 900_000
+_STRUCTURE_MIN_CANDLES = 25
+_STRUCTURE_PIVOT_WING = 2
+# Candles within this trailing window are reserved for break/retest
+# confirmation and are never themselves eligible as pivot-low
+# candidates -- otherwise a breakdown candle could masquerade as a
+# new "higher low" and mask its own break.
+_STRUCTURE_RESERVED_TAIL = 10
+
+
+def _bearish_structure_unavailable(reason_codes: List[str]) -> Dict[str, Any]:
+    """Fail-closed result shared by all early-exit paths below."""
+    return {
+        "available": False,
+        "bearish_15m_structure": False,
+        "support_break_close": False,
+        "retest_rejected": None,
+        "last_higher_low": None,
+        "broken_support": None,
+        "reason_codes": list(reason_codes),
+    }
+
+
+def evaluate_bearish_structure(candles_15m: List[List[float]]) -> Dict[str, Any]:
+    """Deterministic, pure, look-ahead-free 15m bearish structure gate.
+
+    Meant to be consumed by entry_decision.py's short-entry gate as a hard
+    structural confirmation input. It is intentionally independent of the
+    below_vwap location feature: below_vwap must never, by itself, be
+    treated as sufficient bearish structural confirmation here or by any
+    caller of this function.
+
+    Input contract: ``candles_15m`` must be a list of already-CLOSED 15m
+    OHLCV rows ``[timestamp_ms, open, high, low, close, volume]`` sorted
+    oldest-to-newest. No open/incomplete candle may be included by the
+    caller -- this function does not attempt to detect an in-progress bar,
+    it only validates timestamp spacing and basic OHLC sanity.
+
+    Structure definition used (documented per the Change D requirement):
+    a "higher low" is a confirmed pivot low (a candle whose low is lower
+    than the low of the two candles on each side of it) that sits above
+    the immediately preceding confirmed pivot low, establishing a local
+    uptrend support level. ``bearish_15m_structure`` is True only when a
+    COMPLETED 15m candle closes below that most recent confirmed
+    higher-low level (this is the "support_break_close" event) -- i.e.
+    bearish_15m_structure and support_break_close share the exact same
+    definition in this implementation: a deterministic close-based
+    break of the last confirmed higher-low. A wick below the level
+    without a close below it never sets either flag.
+
+    Returns a dict:
+        {
+            "available": bool,
+            "bearish_15m_structure": bool,
+            "support_break_close": bool,
+            "retest_rejected": bool | None,
+            "last_higher_low": float | None,
+            "broken_support": float | None,
+            "reason_codes": list[str],
+        }
+    """
+    if not isinstance(candles_15m, list) or len(candles_15m) < _STRUCTURE_MIN_CANDLES:
+        return _bearish_structure_unavailable(["INSUFFICIENT_CANDLE_HISTORY"])
+
+    normalized: List[List[float]] = []
+    for row in candles_15m:
+        if not isinstance(row, (list, tuple)) or len(row) < 6:
+            return _bearish_structure_unavailable(["STRUCTURE_DATA_UNAVAILABLE"])
+        try:
+            ts, opening, high, low, close, volume = (float(value) for value in row[:6])
+        except (TypeError, ValueError):
+            return _bearish_structure_unavailable(["STRUCTURE_DATA_UNAVAILABLE"])
+        if (
+            ts <= 0
+            or min(opening, high, low, close) <= 0
+            or volume < 0
+            or high < max(opening, close)
+            or low > min(opening, close)
+        ):
+            return _bearish_structure_unavailable(["STRUCTURE_DATA_UNAVAILABLE"])
+        normalized.append([ts, opening, high, low, close, volume])
+
+    for previous, current in zip(normalized, normalized[1:]):
+        if current[0] - previous[0] != _STRUCTURE_TIMEFRAME_MS_15M:
+            return _bearish_structure_unavailable(["STRUCTURE_DATA_GAPPED"])
+
+    wing = _STRUCTURE_PIVOT_WING
+    pivot_search_end = len(normalized) - _STRUCTURE_RESERVED_TAIL
+    pivot_lows: List[tuple] = []
+    for index in range(wing, max(wing, pivot_search_end - wing)):
+        candidate_low = normalized[index][3]
+        neighbors = [
+            normalized[index - offset][3] for offset in range(1, wing + 1)
+        ] + [
+            normalized[index + offset][3] for offset in range(1, wing + 1)
+        ]
+        if all(candidate_low < neighbor for neighbor in neighbors):
+            pivot_lows.append((index, candidate_low))
+
+    if len(pivot_lows) < 2:
+        return _bearish_structure_unavailable(["INSUFFICIENT_CANDLE_HISTORY"])
+
+    (_prev_index, prev_low), (last_index, last_low) = pivot_lows[-2], pivot_lows[-1]
+    if not (last_low > prev_low):
+        return _bearish_structure_unavailable(["NO_CONFIRMED_HIGHER_LOW"])
+
+    support = last_low
+    post_pivot = normalized[last_index + 1 :]
+
+    break_offset = None
+    for offset, row in enumerate(post_pivot):
+        if row[4] < support:
+            break_offset = offset
+            break
+
+    support_break_close = break_offset is not None
+    wick_only = any(
+        row[3] < support and row[4] >= support for row in post_pivot
+    )
+
+    reason_codes: List[str] = []
+    retest_rejected: Optional[bool] = None
+    broken_support: Optional[float] = None
+
+    if support_break_close:
+        broken_support = support
+        reason_codes.append("SUPPORT_BREAK_CLOSE_CONFIRMED")
+        after_break = post_pivot[break_offset + 1 :]
+        retest_index = next(
+            (i for i, row in enumerate(after_break) if row[2] >= support),
+            None,
+        )
+        if retest_index is None:
+            retest_rejected = None
+            reason_codes.append("RETEST_DATA_INSUFFICIENT")
+        else:
+            remaining = after_break[retest_index:]
+            retest_rejected = bool(remaining) and all(
+                row[4] < support for row in remaining
+            )
+            reason_codes.append(
+                "RETEST_REJECTED" if retest_rejected else "RETEST_NOT_REJECTED"
+            )
+    else:
+        reason_codes.append("NO_CLOSED_SUPPORT_BREAK")
+        if wick_only:
+            reason_codes.append("WICK_ONLY_NO_CLOSE_BELOW_SUPPORT")
+
+    return {
+        "available": True,
+        "bearish_15m_structure": support_break_close,
+        "support_break_close": support_break_close,
+        "retest_rejected": retest_rejected,
+        "last_higher_low": support,
+        "broken_support": broken_support,
+        "reason_codes": reason_codes,
+    }
+
+
+def _absorption_unavailable(reason_codes: List[str]) -> Dict[str, Any]:
+    return {
+        "available": False,
+        "sell_pressure_high": False,
+        "downside_displacement_confirmed": False,
+        "support_broken": False,
+        "absorption_detected": False,
+        "reason_codes": list(reason_codes),
+    }
+
+
+def evaluate_absorption(
+    *,
+    sell_flow_usdt: Optional[float],
+    buy_flow_usdt: Optional[float],
+    taker_buy_sell_ratio: Optional[float],
+    closed_price_return_pct: Optional[float],
+    support_break_close: Optional[bool],
+    displacement_threshold_pct: float = -0.10,
+) -> Dict[str, Any]:
+    """Deterministic, pure absorption-risk classifier.
+
+    Meant to be consumed by entry_decision.py's short-entry gate as a hard
+    fact input alongside ``evaluate_bearish_structure``'s support-break
+    outcome (``support_break_close`` is accepted here as a parameter and is
+    never recomputed).
+
+    Only fields that actually exist in this codebase are used:
+    ``sell_flow_usdt`` / ``buy_flow_usdt`` (microstructure.py order-flow
+    packet) and ``taker_buy_sell_ratio`` (derivatives.py packet). Order-book
+    / bid-depth fields are deliberately NOT used here because they are not
+    guaranteed to be reliably populated for this purpose.
+
+    "Selling pressure high" is true when either sell-side flow notionally
+    exceeds buy-side flow, or the taker buy/sell ratio is below 1.0
+    (more takers selling than buying) -- matching the same directional
+    convention already used by score_v2.py's bearish scoring. At least one
+    of the two signal families must be present, plus a closed-candle price
+    return and the Change D support-break outcome, or this function fails
+    closed with ``available=False``.
+
+    Returns a dict:
+        {
+            "available": bool,
+            "sell_pressure_high": bool,
+            "downside_displacement_confirmed": bool,
+            "support_broken": bool,
+            "absorption_detected": bool,
+            "reason_codes": list[str],
+        }
+    """
+    have_flow_pair = sell_flow_usdt is not None and buy_flow_usdt is not None
+    have_taker_ratio = taker_buy_sell_ratio is not None
+    if not have_flow_pair and not have_taker_ratio:
+        return _absorption_unavailable(["ABSORPTION_DATA_UNAVAILABLE"])
+    if closed_price_return_pct is None:
+        return _absorption_unavailable(["ABSORPTION_DATA_UNAVAILABLE"])
+    if support_break_close is None:
+        return _absorption_unavailable(["ABSORPTION_DATA_UNAVAILABLE"])
+
+    sell_pressure_high = bool(
+        (have_flow_pair and sell_flow_usdt > buy_flow_usdt)
+        or (have_taker_ratio and taker_buy_sell_ratio < 1.0)
+    )
+    downside_displacement_confirmed = bool(
+        closed_price_return_pct <= displacement_threshold_pct
+    )
+    support_broken = bool(support_break_close)
+
+    reason_codes: List[str] = []
+    absorption_detected = False
+
+    if sell_pressure_high and not downside_displacement_confirmed:
+        absorption_detected = True
+        reason_codes.append("SELL_FLOW_WITHOUT_PRICE_DISPLACEMENT")
+    if sell_pressure_high and not support_broken:
+        absorption_detected = True
+        reason_codes.append("SUPPORT_HOLDING_DESPITE_SELL_FLOW")
+
+    if absorption_detected:
+        reason_codes.append("ABSORPTION_RISK")
+
+    return {
+        "available": True,
+        "sell_pressure_high": sell_pressure_high,
+        "downside_displacement_confirmed": downside_displacement_confirmed,
+        "support_broken": support_broken,
+        "absorption_detected": absorption_detected,
+        "reason_codes": reason_codes,
+    }
