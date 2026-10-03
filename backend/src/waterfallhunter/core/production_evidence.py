@@ -722,6 +722,18 @@ class ProductionEvidenceRecorder:
         since = timestamp - 86_400
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
+            # The index is pinned deliberately. Left to itself the planner
+            # chooses idx_production_evidence_replay_v9 (schema_version, id),
+            # which cannot satisfy the observed_at predicate, so it fetches
+            # every row of the current generation to re-test the filter:
+            # 493,133 rows visited for the 18,289 actually wanted. Measured
+            # on the live 37.9 GB registry with a cold page cache, that is
+            # 40.5s - long enough that the Next.js rewrite proxy gives up and
+            # the dashboard reports an empty production-evidence panel.
+            # Searched through idx_production_evidence_time the same aggregate
+            # returns in 1.9s cold. A covering index would be faster still but
+            # requires a schema-contract and migration-preflight change, so it
+            # is deliberately out of scope here.
             totals = conn.execute(
                 """
                 SELECT COUNT(*) snapshot_count, COUNT(DISTINCT symbol) symbol_count,
@@ -743,6 +755,7 @@ class ProductionEvidenceRecorder:
                        SUM(uncompressed_bytes) uncompressed_bytes,
                        SUM(compressed_bytes) compressed_bytes
                 FROM production_evidence_snapshots
+                    INDEXED BY idx_production_evidence_time
                 WHERE observed_at >= ? AND schema_version = ?
                 """,
                 (since, self.SCHEMA_VERSION),
