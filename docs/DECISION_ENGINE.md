@@ -8,7 +8,7 @@ Only `ENTRY_READY` is a proactive entry signal. `ACTIVE` means an earlier entry-
 
 ## Readiness policy
 
-The current `entry_policy_v1` uses hard invalidators plus weighted evidence. Its versioned bands are `ENTRY_READY >= 70`, `FORMING >= 55`, otherwise `NO_TRADE`, subject to mandatory timing/direction/execution checks and anti-chase. The Anti-Chase hard-extension boundary is `2.5 ATR`.
+The current `entry_policy_v1` uses hard invalidators plus weighted evidence. Its versioned bands are `ENTRY_READY >= 72`, `FORMING >= 55`, otherwise `NO_TRADE`, subject to mandatory timing/direction/execution checks and anti-chase. The Anti-Chase hard-extension boundary is `2.5 ATR`.
 
 ## Hard invalidators
 

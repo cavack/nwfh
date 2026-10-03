@@ -71,7 +71,7 @@ class SettingSpec:
 SPECS: tuple[SettingSpec, ...] = (
     # --- Decision thresholds -------------------------------------------------
     SettingSpec(
-        "entry_ready_minimum", "number", 70.0,
+        "entry_ready_minimum", "number", 72.0,
         "ENTRY_READY threshold", "Readiness a candidate must reach to become actionable.",
         "thresholds", minimum=40.0, maximum=95.0, step=0.5, unit="pts",
     ),

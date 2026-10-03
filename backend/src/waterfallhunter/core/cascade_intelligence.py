@@ -191,3 +191,204 @@ def build_cascade_evidence(
         "components": components,
         "latent_liquidation_levels": None,
     }
+
+
+# --- Change F: multi-factor long-crowding classification -----------------
+#
+# Previously, any consumer that saw top_trader_long_short_ratio >= 1.5 alone
+# treated that as "long crowding present" (see entry_decision.py's
+# LONG_CROWDING_PRESENT reason code, which this function does not replace --
+# entry_decision.py is out of scope for this change and is owned by another
+# workstream). A single elevated ratio is evidence that longs are the
+# dominant position, not evidence that those longs are trapped and about to
+# be forced out. classify_long_crowding() below produces a real
+# classification with three possible outcomes so callers (once wired up)
+# can distinguish "market is long-heavy" from "longs are demonstrably
+# trapped and unwinding" from "we genuinely cannot tell yet".
+
+LONG_HEAVY_MARKET = "LONG_HEAVY_MARKET"
+LONGS_TRAPPED_FOR_SHORT = "LONGS_TRAPPED_FOR_SHORT"
+LONG_CROWDING_UNCONFIRMED = "LONG_CROWDING_UNCONFIRMED"
+NOT_LONG_HEAVY = "NOT_LONG_HEAVY"
+
+DEFAULT_LONG_SHORT_RATIO_THRESHOLD = 1.5
+
+
+def _safe_structure_signal(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Best-effort, fail-closed lookup of the deterministic bearish-structure /
+    absorption signal that another workstream is adding to candle_analyzer.py.
+
+    That module may not yet expose this function (or may expose it under a
+    slightly different name/shape) at the time this code runs. Any import
+    failure, missing attribute, or exception while calling it must NOT crash
+    crowding classification, and missing/unavailable structure data must
+    fail closed -- i.e. be treated as "not confirmed", never as "confirmed".
+    We deliberately do not import candle_analyzer.py at module load time so
+    this file keeps working even if that module is mid-edit or absent.
+    """
+    try:
+        from waterfallhunter.core import candle_analyzer  # type: ignore
+    except Exception:
+        return {}
+
+    evaluator = getattr(candle_analyzer, "evaluate_bearish_15m_structure", None) or getattr(
+        candle_analyzer, "evaluate_bearish_structure", None
+    )
+    if evaluator is None:
+        return {}
+    try:
+        result = evaluator(metrics)
+    except Exception:
+        return {}
+    if not isinstance(result, dict) or result.get("available") is not True:
+        return {}
+    return {
+        "bearish_15m_structure": result.get("bearish_15m_structure"),
+        "support_break_close": result.get("support_break_close"),
+        "downside_displacement_confirmed": result.get("downside_displacement_confirmed"),
+    }
+
+
+def classify_long_crowding(
+    metrics: dict[str, Any],
+    *,
+    bearish_15m_structure: bool | None = None,
+    support_break_close: bool | None = None,
+    downside_displacement_confirmed: bool | None = None,
+    long_short_ratio_threshold: float = DEFAULT_LONG_SHORT_RATIO_THRESHOLD,
+) -> dict[str, Any]:
+    """Classify what an elevated top-trader long/short ratio actually means.
+
+    Outcomes:
+      * NOT_LONG_HEAVY -- ratio missing or below threshold; not applicable.
+      * LONG_HEAVY_MARKET -- ratio elevated, no corroborating evidence that
+        those longs are trapped. This must never be treated as short-entry
+        confirmation.
+      * LONG_CROWDING_UNCONFIRMED -- ratio elevated and *some* (but not all)
+        of the required evidence is present (e.g. deterministic bearish
+        structure confirmed but no corroborating derivatives/liquidation
+        evidence, or vice versa). Insufficient to call it either way. Must
+        NEVER be treated as supporting ENTRY_READY.
+      * LONGS_TRAPPED_FOR_SHORT -- ratio elevated AND deterministic bearish
+        15m structure confirmed AND a support-break close confirmed AND at
+        least one independent corroborating condition from data that
+        actually exists in this codebase.
+
+    `bearish_15m_structure` / `support_break_close` /
+    `downside_displacement_confirmed` come from another agent's new
+    candle_analyzer.py function, which may not exist yet. Callers may pass
+    them explicitly once wired up; if omitted, we attempt a guarded,
+    fail-closed lookup via `_safe_structure_signal`.
+
+    Corroborating conditions actually wired up in this codebase (derivatives.py
+    / cascade evidence), used because the underlying fields are genuinely
+    populated here:
+      * OI_UNWINDING_CONSISTENT -- oi_change_1h_pct <= -0.5 (open interest
+        actively contracting, consistent with forced long deleveraging).
+      * FUNDING_OVERHEATED_LONG -- funding_percentile >= 0.95 (funding is at
+        a multi-period extreme, i.e. longs are paying a historically high
+        premium to stay positioned -- a positioning-extremity signal, NOT a
+        raw negative-funding signal).
+      * LONG_LIQUIDATIONS_DOMINANT -- observed liquidation_flow packet shows
+        long-side liquidation notional dominating short-side (>=55% share),
+        i.e. actual forced long liquidations are happening right now.
+      * DOWNSIDE_DISPLACEMENT_CONFIRMED -- passed in (or discovered via
+        `_safe_structure_signal`) from the other agent's structure work.
+
+    Explicitly NOT used as corroboration, by design:
+      * Negative funding_rate alone. Negative funding alone is not proof of
+        a short entry -- it only means shorts are currently paying longs,
+        which is a crowd-positioning signal, not evidence longs are trapped.
+        We still surface it as an informational `short_squeeze_risk_flag`
+        (mirroring/never contradicting the existing SHORT_SQUEEZE_RISK
+        concept elsewhere in the codebase) but it never counts toward
+        LONGS_TRAPPED_FOR_SHORT.
+      * Order-book depth / OI absolute level -- not genuinely available as
+        forced-unwinding evidence in this codebase beyond the OI *change*
+        already used above, so no additional claim is made about them.
+
+    Missing OI/funding/liquidation data never counts as positive evidence --
+    if a field is absent, that corroborating condition simply does not
+    trigger (it is not treated as true, and not treated as a bad-outcome
+    default either; it just does not count).
+    """
+    derivatives = _record(metrics.get("derivatives"))
+    if derivatives.get("available") is not True:
+        return {
+            "available": False,
+            "classification": LONG_CROWDING_UNCONFIRMED,
+            "reason": "derivatives unavailable",
+            "reason_codes": ["DERIVATIVES_UNAVAILABLE", LONG_CROWDING_UNCONFIRMED],
+        }
+
+    top_ratio = _finite(derivatives.get("top_trader_long_short_ratio"))
+    if top_ratio is None or top_ratio < long_short_ratio_threshold:
+        return {
+            "available": True,
+            "classification": NOT_LONG_HEAVY,
+            "top_trader_long_short_ratio": top_ratio,
+            "long_short_ratio_threshold": long_short_ratio_threshold,
+            "reason_codes": [NOT_LONG_HEAVY],
+        }
+
+    funding_rate = _finite(derivatives.get("funding_rate"))
+    funding_percentile = _finite(derivatives.get("funding_percentile"))
+    oi_change = _finite(derivatives.get("oi_change_1h_pct"))
+
+    if bearish_15m_structure is None or support_break_close is None or downside_displacement_confirmed is None:
+        imported = _safe_structure_signal(metrics)
+        if bearish_15m_structure is None:
+            bearish_15m_structure = imported.get("bearish_15m_structure")
+        if support_break_close is None:
+            support_break_close = imported.get("support_break_close")
+        if downside_displacement_confirmed is None:
+            downside_displacement_confirmed = imported.get("downside_displacement_confirmed")
+
+    structure_confirmed = bearish_15m_structure is True and support_break_close is True
+
+    corroboration_reason_codes: list[str] = []
+    if oi_change is not None and oi_change <= -0.5:
+        corroboration_reason_codes.append("OI_UNWINDING_CONSISTENT")
+    if funding_percentile is not None and funding_percentile >= 0.95:
+        corroboration_reason_codes.append("FUNDING_OVERHEATED_LONG")
+
+    liquidations = _record(metrics.get("liquidation_flow"))
+    if liquidations.get("available") is True:
+        long_notional = _finite(liquidations.get("long_liquidation_notional_1m"))
+        short_notional = _finite(liquidations.get("short_liquidation_notional_1m"))
+        if long_notional is not None and short_notional is not None and (long_notional + short_notional) > 0:
+            long_share = long_notional / (long_notional + short_notional)
+            if long_share >= 0.55:
+                corroboration_reason_codes.append("LONG_LIQUIDATIONS_DOMINANT")
+    if downside_displacement_confirmed is True:
+        corroboration_reason_codes.append("DOWNSIDE_DISPLACEMENT_CONFIRMED")
+
+    has_corroboration = len(corroboration_reason_codes) > 0
+
+    # Informational only -- never used as trapped-long proof by itself.
+    short_squeeze_risk_flag = funding_rate is not None and funding_rate < 0
+
+    if structure_confirmed and has_corroboration:
+        classification = LONGS_TRAPPED_FOR_SHORT
+    elif structure_confirmed or has_corroboration:
+        classification = LONG_CROWDING_UNCONFIRMED
+    else:
+        classification = LONG_HEAVY_MARKET
+
+    reason_codes = [classification] + corroboration_reason_codes
+    if short_squeeze_risk_flag:
+        reason_codes.append("SHORT_SQUEEZE_RISK")
+
+    return {
+        "available": True,
+        "classification": classification,
+        "top_trader_long_short_ratio": top_ratio,
+        "long_short_ratio_threshold": long_short_ratio_threshold,
+        "bearish_15m_structure": bearish_15m_structure,
+        "support_break_close": support_break_close,
+        "downside_displacement_confirmed": downside_displacement_confirmed,
+        "structure_confirmed": structure_confirmed,
+        "corroboration_reason_codes": corroboration_reason_codes,
+        "short_squeeze_risk_flag": short_squeeze_risk_flag,
+        "reason_codes": reason_codes,
+    }

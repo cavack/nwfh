@@ -37,7 +37,7 @@ LEVERAGE_POLICY_VERSION = "adaptive_signal_leverage_v3"
 # actually produces actionable decisions.
 LEVERAGE_MIN = 4
 LEVERAGE_MAX = 18
-READINESS_FLOOR = 70.0  # EntryDecisionPolicy.entry_ready_minimum
+READINESS_FLOOR = 72.0  # EntryDecisionPolicy.entry_ready_minimum
 READINESS_CEILING = 95.0
 
 

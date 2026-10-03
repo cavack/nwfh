@@ -127,10 +127,23 @@ def strong_metrics() -> dict:
             "readiness_points": 10.0,
             "maximum_available": 10.0,
         },
+        # Change C: AI-neutral cap. A "strong" fixture carries a favorable,
+        # AVAILABLE AI *sentiment* advisory so tests unrelated to AI behavior
+        # are not incidentally capped by AI being neutral/absent. This is a
+        # deliberately distinct key from "ai_advisory" -- that key already
+        # belongs to the pre-existing, unrelated deterministic order-book
+        # veto (see test_deterministic_market_data_veto_hard_blocks_strong_setup
+        # below), which has a completely different shape. Tests targeting the
+        # AI-neutral cap itself override or remove this key explicitly.
+        "ai_sentiment_advisory": {
+            "ai_status": "AVAILABLE",
+            "ai_advice": "SUPPORTS_SHORT",
+            "ai_answer_yes": True,
+        },
     }
 
 
-def decide(metrics: dict, status: str = "PRE-TRIGGER", *, analysis_age: float = 10.0, reference_age: float = 3.0):
+def decide(metrics: dict, status: str = "ARMED", *, analysis_age: float = 10.0, reference_age: float = 3.0):
     return build_entry_decision(
         metrics,
         status,
@@ -242,7 +255,7 @@ def test_deterministic_market_data_veto_hard_blocks_strong_setup() -> None:
 
 
 def test_triggered_strong_setup_becomes_active_not_a_disappearing_trigger() -> None:
-    previous = decide(strong_metrics(), status="PRE-TRIGGER")
+    previous = decide(strong_metrics(), status="ARMED")
     assert previous["decision"] == "ENTRY_READY"
     packet = build_entry_decision(
         strong_metrics(),
@@ -822,3 +835,157 @@ def test_stale_evidence_precedes_anti_chase_late_classification() -> None:
     assert packet["decision"] == "NO_TRADE"
     assert "STALE_ANALYSIS" in packet["block_reasons"]
     assert "ANTI_CHASE_HARD_BLOCK" not in packet["block_reasons"]
+
+
+# ---------------------------------------------------------------------------
+# Change B: lifecycle veto — PRE-TRIGGER must never yield ENTRY_READY.
+# ---------------------------------------------------------------------------
+
+
+def test_pre_trigger_never_reaches_entry_ready_even_at_high_readiness() -> None:
+    """A strong, otherwise-favorable setup must stay capped while PRE-TRIGGER.
+
+    Readiness alone (even far above entry_ready_minimum) must never stand in
+    for an explicit TRIGGERED/ARMED lifecycle fact.
+    """
+    packet = decide(strong_metrics(), status="PRE-TRIGGER")
+    assert packet["entry_readiness"] >= 90.0
+    assert packet["decision"] != "ENTRY_READY"
+    assert packet["decision"] != "ACTIVE"
+    assert packet["decision"] == "FORMING"
+    assert "LIFECYCLE_NOT_TRIGGERED" in packet["reason_codes"]
+    assert "ENTRY_GATES_PASS" not in packet["reason_codes"]
+
+
+def test_watch_and_fuel_rich_are_also_blocked_from_entry_ready() -> None:
+    for status in ("WATCH", "FUEL-RICH"):
+        packet = decide(strong_metrics(), status=status)
+        assert packet["decision"] not in ("ENTRY_READY", "ACTIVE")
+        assert "LIFECYCLE_NOT_TRIGGERED" in packet["reason_codes"]
+
+
+def test_triggered_with_valid_evidence_still_reaches_active() -> None:
+    """TRIGGERED must still be able to progress normally after ENTRY_READY."""
+    ready = decide(strong_metrics(), status="TRIGGERED")
+    assert ready["decision"] == "NO_TRADE"
+    assert "ENTRY_READY_PREDECESSOR_REQUIRED" in ready["block_reasons"]
+
+    armed = decide(strong_metrics(), status="ARMED")
+    assert armed["decision"] == "ENTRY_READY"
+    active = build_entry_decision(
+        strong_metrics(),
+        "TRIGGERED",
+        evaluated_at=1_788_000_001,
+        analysis_age_seconds=10.0,
+        reference_age_seconds=3.0,
+        previous_decision=armed,
+    )
+    assert active["decision"] == "ACTIVE"
+    assert "LIFECYCLE_NOT_TRIGGERED" not in active["reason_codes"]
+
+
+# ---------------------------------------------------------------------------
+# Change C: AI-neutral cap.
+# ---------------------------------------------------------------------------
+
+
+def test_ai_neutral_without_deterministic_structure_caps_at_forming() -> None:
+    metrics = strong_metrics()
+    metrics["ai_sentiment_advisory"] = {
+        "ai_status": "AVAILABLE",
+        "ai_advice": "DOES_NOT_SUPPORT_SHORT",
+        "ai_answer_yes": False,
+    }
+    packet = decide(metrics)
+    assert packet["decision"] != "ENTRY_READY"
+    assert packet["decision"] == "FORMING"
+    assert "AI_NEUTRAL_WITHOUT_BEARISH_STRUCTURE" in packet["reason_codes"]
+
+
+def test_ai_missing_or_unavailable_behaves_like_neutral() -> None:
+    """Distinguish two different "no confirmation" cases for the AI cap.
+
+    1. No AI-sentiment subsystem integrated for this candidate at all (the
+       "ai_sentiment_advisory" key is entirely absent): this must NOT be
+       treated as "neutral" and must NOT cap the decision on its own --
+       doing so would silently turn AI into a brand-new mandatory gate
+       everywhere no AI subsystem exists yet, which Change C explicitly
+       rules out. (Note: strong_metrics() already carries other favorable
+       evidence, so an uncapped decision here can legitimately reach
+       ENTRY_READY -- that is the point of this assertion.)
+    2. An AI-sentiment subsystem DID run for this candidate but came back
+       UNAVAILABLE/neutral (the key is present with a non-confirming
+       status): this must still cap the decision, same as an explicit
+       NEUTRAL verdict.
+    """
+    metrics = strong_metrics()
+    metrics.pop("ai_sentiment_advisory", None)
+    packet = decide(metrics)
+    assert "AI_NEUTRAL_WITHOUT_BEARISH_STRUCTURE" not in packet["reason_codes"]
+
+    metrics["ai_sentiment_advisory"] = {"ai_status": "UNAVAILABLE", "ai_advice": "UNAVAILABLE"}
+    packet_unavailable = decide(metrics)
+    assert packet_unavailable["decision"] != "ENTRY_READY"
+    assert "AI_NEUTRAL_WITHOUT_BEARISH_STRUCTURE" in packet_unavailable["reason_codes"]
+    assert "AI_NEUTRAL_WITHOUT_BEARISH_STRUCTURE" in packet_unavailable["reason_codes"]
+
+
+def test_ai_neutral_with_confirmed_structure_removes_only_the_ai_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Structure confirmation lifts the AI-specific cap, but nothing else.
+
+    The deterministic structure gate itself is being built in parallel in
+    candle_analyzer.py and may not exist yet, so this stubs the integration
+    point (`_bearish_structure_confirmed`) directly rather than depending on
+    that module.
+    """
+    from waterfallhunter.core import entry_decision
+
+    monkeypatch.setattr(
+        entry_decision, "_bearish_structure_confirmed", lambda metrics: True
+    )
+    metrics = strong_metrics()
+    metrics["ai_sentiment_advisory"] = {"ai_status": "UNAVAILABLE", "ai_advice": "UNAVAILABLE"}
+    packet = decide(metrics)
+    assert "AI_NEUTRAL_WITHOUT_BEARISH_STRUCTURE" not in packet["reason_codes"]
+    assert packet["decision"] == "ENTRY_READY"
+
+    # Structure confirmation must not bypass the lifecycle gate: PRE-TRIGGER
+    # stays capped even though the AI-specific cap has been lifted.
+    blocked = decide(metrics, status="PRE-TRIGGER")
+    assert blocked["decision"] not in ("ENTRY_READY", "ACTIVE")
+    assert "LIFECYCLE_NOT_TRIGGERED" in blocked["reason_codes"]
+
+    # Structure confirmation must not bypass execution/other deterministic
+    # blockers either.
+    broken_execution_metrics = strong_metrics()
+    broken_execution_metrics["ai_sentiment_advisory"] = {
+        "ai_status": "UNAVAILABLE",
+        "ai_advice": "UNAVAILABLE",
+    }
+    broken_execution_metrics.pop("microstructure")
+    still_blocked = decide(broken_execution_metrics)
+    assert still_blocked["decision"] == "NO_TRADE"
+    assert "EXECUTION_UNAVAILABLE" in still_blocked["block_reasons"]
+
+
+def test_ai_bearish_signal_alone_does_not_grant_entry_ready() -> None:
+    """AI must never be treated as confirmation on its own, even when bearish."""
+    metrics = strong_metrics()
+    metrics["ai_sentiment_advisory"] = {
+        "ai_status": "AVAILABLE",
+        "ai_advice": "SUPPORTS_SHORT",
+        "ai_answer_yes": True,
+    }
+    # A bearish AI opinion should not, on its own, promote a PRE-TRIGGER
+    # candidate past the lifecycle gate.
+    packet = decide(metrics, status="PRE-TRIGGER")
+    assert packet["decision"] not in ("ENTRY_READY", "ACTIVE")
+    assert "LIFECYCLE_NOT_TRIGGERED" in packet["reason_codes"]
+    # But it does not add its own extra cap when the lifecycle gate already
+    # allows the decision through (AI-neutral cap is specifically about
+    # NEUTRAL/absent AI, not about a bearish opinion).
+    ready = decide(metrics)
+    assert ready["decision"] == "ENTRY_READY"
+    assert "AI_NEUTRAL_WITHOUT_BEARISH_STRUCTURE" not in ready["reason_codes"]

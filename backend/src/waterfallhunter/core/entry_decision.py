@@ -15,7 +15,7 @@ from typing import Any
 class EntryDecisionPolicy:
     version: str = "entry_policy_v2_calibrated"
     forming_minimum: float = 55.0
-    entry_ready_minimum: float = 70.0
+    entry_ready_minimum: float = 72.0
     max_analysis_age_seconds: float = 600.0
     max_reference_age_seconds: float = 60.0
     anti_chase_hard_block_atr: float = 2.5
@@ -55,8 +55,36 @@ class EntryDecisionPolicy:
                     kwargs[key] = number
         if not kwargs:
             return cls()
-        # Mark the policy so a persisted packet shows it was not the stock one.
+        # Mark the policy so a persisted packet shows it was not the stock one -
+        # but only when a value actually differs. Writing the shipped defaults
+        # back unchanged, or a reset to shipped defaults, leaves the effective
+        # policy identical to the stock one, and an immutable decision packet
+        # must not claim it was produced by an operator-tuned policy when it
+        # was not. This happened in Production: after a reset to shipped
+        # defaults every packet still recorded `entry_policy_v2_operator_tuned`
+        # while every threshold equalled the shipped default.
+        stock = cls()
+        if all(getattr(stock, key) == value for key, value in kwargs.items()):
+            return stock
         return cls(version="entry_policy_v2_operator_tuned", **kwargs)
+
+
+# --- Change B: lifecycle veto -------------------------------------------
+# Lifecycle states that represent an explicit, confirmed trigger. PRE-TRIGGER
+# (and any earlier watch-only state such as WATCH / FUEL-RICH) is monitoring
+# only and must never be treated as entry-ready by score alone: the gate
+# below is an explicit membership check against real lifecycle strings, never
+# a threshold/heuristic derived from readiness or any other score. ARMED is
+# kept eligible because the existing ACTIVE-after-ENTRY_READY continuity
+# contract (see the predecessor check in ``build_entry_decision``) already
+# depends on ARMED being able to produce ENTRY_READY ahead of TRIGGERED; only
+# PRE-TRIGGER/WATCH/FUEL-RICH and any other non-triggered state are newly
+# blocked here.
+_TRIGGER_CONFIRMED_LIFECYCLE_STATES = frozenset({"ARMED", "TRIGGERED"})
+LIFECYCLE_NOT_TRIGGERED = "LIFECYCLE_NOT_TRIGGERED"
+
+# --- Change C: AI-neutral cap --------------------------------------------
+AI_NEUTRAL_WITHOUT_BEARISH_STRUCTURE = "AI_NEUTRAL_WITHOUT_BEARISH_STRUCTURE"
 
 
 def _record(value: Any) -> dict[str, Any]:
@@ -81,6 +109,81 @@ def _ramp(value: float, lower: float, upper: float, maximum: float) -> float:
 
 def _has_number(packet: dict[str, Any], key: str) -> bool:
     return _finite(packet.get(key)) is not None
+
+
+def _lifecycle_confirmed(status: str) -> bool:
+    """Explicit lifecycle-state membership check, never a score heuristic.
+
+    ENTRY_READY/ACTIVE must require the candidate to actually be in a
+    trigger-confirmed lifecycle state. A high readiness score, favorable
+    evidence, or any other derived signal must never substitute for this.
+    """
+    return status in _TRIGGER_CONFIRMED_LIFECYCLE_STATES
+
+
+def _bearish_structure_confirmed(metrics: dict[str, Any]) -> bool:
+    """Optional-dependency hook for the deterministic bearish structure gate.
+
+    A parallel work-stream is adding a deterministic bearish 15m
+    price-structure / support-break-close gate to ``candle_analyzer.py``
+    (e.g. ``bearish_15m_structure`` / ``support_break_close``). That module
+    may not exist yet, or may not yet expose either function. This call is
+    therefore fully defensive: any import failure, missing attribute, raised
+    exception, or non-``True`` return is treated as "structure NOT
+    confirmed" (fail closed) rather than crashing or being treated as
+    confirmation. Once the other work-stream lands its gate, it slots in
+    here automatically with no further coordination required.
+    """
+    try:
+        from waterfallhunter.core import candle_analyzer  # type: ignore[import-not-found]
+    except ImportError:
+        return False
+    checker = getattr(candle_analyzer, "bearish_15m_structure", None)
+    if checker is None:
+        checker = getattr(candle_analyzer, "support_break_close", None)
+    if not callable(checker):
+        return False
+    try:
+        result = checker(metrics)
+    except Exception:
+        return False
+    return result is True
+
+
+def _ai_neutral_or_unavailable(metrics: dict[str, Any]) -> bool:
+    """True when a directional-sentiment AI advisory ran and carries no
+    directional confirmation.
+
+    Covers NEUTRAL, stale, or invalid AI evidence alike -- anything short of
+    an explicit, available, short-supporting verdict is folded into
+    "neutral" here. AI is advisory-only: it is never treated as
+    bullish/bearish confirmation on its own.
+
+    IMPORTANT -- key naming: this deliberately reads "ai_sentiment_advisory",
+    NOT "ai_advisory". "ai_advisory" is already used by the pre-existing,
+    unrelated deterministic order-book/ticker veto populated by
+    ``ai_veto.evaluate_deterministic`` in main.py's
+    ``_apply_deterministic_entry_gate`` (see ``deterministic_veto`` /
+    ``DETERMINISTIC_MARKET_DATA_VETO`` below) -- that dict is present for
+    essentially every live candidate and has a completely different shape
+    (no "ai_status"/"ai_advice" fields). Reusing that key here would make
+    this cap fire for almost every real candidate, turning it into a new,
+    unintended mandatory gate. No directional-sentiment AI subsystem exists
+    in this codebase yet, so "ai_sentiment_advisory" is correctly absent for
+    every real candidate today, keeping this cap dormant (fail-closed as "no
+    cap") until such a subsystem is actually wired in -- consistent with
+    "do not add a new mandatory AI dependency where none exists".
+    """
+    if "ai_sentiment_advisory" not in metrics:
+        return False
+    advisory = _record(metrics.get("ai_sentiment_advisory"))
+    status = str(advisory.get("ai_status") or "").upper()
+    if status != "AVAILABLE":
+        return True
+    advice = str(advisory.get("ai_advice") or "").upper()
+    if advice == "SUPPORTS_SHORT" and advisory.get("ai_answer_yes") is True:
+        return False
+    return True
 
 
 def _structure_points(metrics: dict[str, Any]) -> tuple[float, float, list[str]]:
@@ -678,6 +781,8 @@ def _base_decision(
     execution_ok: bool,
     cross_ok: bool,
     trade_plan_ok: bool,
+    lifecycle_ok: bool,
+    ai_gate_ok: bool,
     policy: EntryDecisionPolicy,
 ) -> str:
     if status == "EXHAUSTED":
@@ -711,6 +816,15 @@ def _base_decision(
         and coverage_pct >= policy.coverage_minimum
         and direction_ok
         and trade_plan_ok
+        # Change B: lifecycle veto. PRE-TRIGGER (and any other non-triggered
+        # state) can never reach ENTRY_READY/ACTIVE no matter how strong the
+        # rest of the evidence looks.
+        and lifecycle_ok
+        # Change C: AI-neutral cap. A NEUTRAL/missing/stale AI advisory caps
+        # the decision unless a deterministic bearish structure gate has
+        # explicitly confirmed independently of AI. This can only restrict
+        # the decision further; it never upgrades or bypasses any other gate.
+        and ai_gate_ok
         and (timing_ok or not policy.gate_timing_required)
         and (execution_ok or not policy.gate_execution_required)
         and (cross_ok or not policy.gate_cross_exchange_required)
@@ -897,6 +1011,28 @@ def build_entry_decision(
     if not execution_inputs_available:
         block_reasons.append("EXECUTION_UNAVAILABLE")
 
+    # Change B: lifecycle veto — explicit state check, never derived from
+    # readiness/score. Reason is surfaced even when other gates already fail
+    # so downstream consumers (notifier, dashboard) can see why a strong
+    # score did not translate into an actionable decision.
+    lifecycle_ok = _lifecycle_confirmed(status)
+    if not lifecycle_ok:
+        reasons.append(LIFECYCLE_NOT_TRIGGERED)
+
+    # Change C: AI-neutral cap. Additive only — never removes any other
+    # gate's effect, only ever adds a further restriction on top of them.
+    # TODO(structure/absorption gate, Change D/E): once candle_analyzer.py
+    # exposes the deterministic bearish_15m_structure / support_break_close
+    # gate, `_bearish_structure_confirmed` picks it up automatically. If a
+    # future absorption gate needs its own independent cap, follow this same
+    # pattern (compute a bool, fold into `ai_gate_ok`/a new gate variable,
+    # append a dedicated reason code) rather than overloading this one.
+    ai_neutral = _ai_neutral_or_unavailable(metrics)
+    structure_confirmed = _bearish_structure_confirmed(metrics) if ai_neutral else False
+    ai_gate_ok = not (ai_neutral and not structure_confirmed)
+    if not ai_gate_ok:
+        reasons.append(AI_NEUTRAL_WITHOUT_BEARISH_STRUCTURE)
+
     readiness = round(_clamp(total_points, 0.0, 100.0), 2)
     coverage_pct = round(_clamp(available_weight, 0.0, 100.0), 2)
     trade_plan = _trade_plan(metrics)
@@ -915,7 +1051,8 @@ def build_entry_decision(
         status=status,
     cascade_status=str((metrics.get("cascade_intelligence") or {}).get("status", "FAIL")), readiness=readiness,
         coverage_pct=coverage_pct, direction_ok=direction_ok, timing_ok=timing >= 5.0,
-        execution_ok=execution_ok, cross_ok=cross_ok, trade_plan_ok=trade_plan_ok, policy=policy,
+        execution_ok=execution_ok, cross_ok=cross_ok, trade_plan_ok=trade_plan_ok,
+        lifecycle_ok=lifecycle_ok, ai_gate_ok=ai_gate_ok, policy=policy,
     )
     # Anti-chase no longer hard-blocks; it is a scoring penalty.
     if decision == "ACTIVE":
