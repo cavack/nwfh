@@ -49,7 +49,7 @@
       "description": "Absolute backend resident memory; the process has no artificial 2GiB limit.",
       "gridPos": {"h": 5, "w": 4, "x": 16, "y": 0},
       "targets": [{"expr": "process_resident_memory_bytes{job=\"waterfall-backend\"}", "refId": "A"}],
-      "fieldConfig": {"defaults": {"unit": "bytes", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 2147483648}, {"color": "red", "value": 3221225472}]}}, "overrides": []}
+      "fieldConfig": {"defaults": {"unit": "bytes", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 3435973837}, {"color": "red", "value": 3865470566}]}}, "overrides": []}
     },
     {
       "id": 6,
