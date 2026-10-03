@@ -9,17 +9,19 @@ groups:
         annotations:
           summary: Waterfall backend is unreachable
       - alert: WaterfallBackendMemoryPressure
-        # The backend container has no 2GiB memory limit. The old rule claimed
-        # it did and alerted at 1.5GiB, which was a made-up 75% ceiling. The
-        # host has 15GiB and normal backend RSS is about 1.1GiB, so 3GiB is a
-        # real, actionable process-pressure threshold while node-level OOM is
-        # covered separately by the host/swap monitors.
-        expr: process_resident_memory_bytes{job="waterfall-backend"} > 3221225472
+        # The backend runs under a hard 2GiB cgroup memory limit
+        # (docker-compose.yml: deploy.resources.limits.memory: 2G, confirmed
+        # on the host as memory.max=2147483648). The previous 3GiB threshold
+        # sat ABOVE that cap, so this alert could never fire - even while
+        # memory.events recorded hundreds of thousands of limit hits.
+        # 1.8GiB is 90% of the real cap: it fires with headroom left to act,
+        # instead of after the kernel already started swapping the process.
+        expr: process_resident_memory_bytes{job="waterfall-backend"} > 1932735283
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: Waterfall backend RSS exceeds 3 GiB
+          summary: Waterfall backend RSS exceeds 90% of its 2 GiB limit
       - alert: WaterfallBackendMemoryGrowth
         expr: deriv(process_resident_memory_bytes{job="waterfall-backend"}[10m]) > 174763
         for: 5m
