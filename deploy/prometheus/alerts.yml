@@ -112,3 +112,49 @@ groups:
           severity: critical
         annotations:
           summary: Shared WebSocket replacement is blocked by unproven transport retirement
+
+  - name: host
+    rules:
+      - alert: HostDiskSpaceCritical
+        expr: |
+          node_filesystem_avail_bytes{mountpoint="/",fstype="ext4"}
+            / node_filesystem_size_bytes{mountpoint="/",fstype="ext4"} < 0.15
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Root filesystem below 15% free
+      - alert: HostDiskSpaceWarning
+        expr: |
+          node_filesystem_avail_bytes{mountpoint="/",fstype="ext4"}
+            / node_filesystem_size_bytes{mountpoint="/",fstype="ext4"} < 0.25
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Root filesystem below 25% free
+      - alert: HostDiskPredictedToFill
+        # This is the rule that was missing when the disk reached 95%.
+        expr: |
+          predict_linear(node_filesystem_avail_bytes{mountpoint="/",fstype="ext4"}[6h], 86400) < 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: Root filesystem projected to fill within 24 hours
+      - alert: HostMemoryPressure
+        expr: |
+          node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Host available memory below 10%
+      - alert: RegistryDatabaseGrowth
+        expr: |
+          predict_linear(wfh_registry_bytes[24h], 30 * 86400) > 60e9
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Registry DB projected to exceed 60 GB within 30 days
