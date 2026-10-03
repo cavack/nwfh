@@ -25,6 +25,183 @@ from waterfallhunter.core.signal_metadata import canonical_sha256
 logger = logging.getLogger("WaterfallHunter.Telegram")
 
 
+# --- Change G: notification title tiers -----------------------------------
+#
+# Message COMPOSITION ONLY: this section decides which title/quality-tier
+# text a decision renders with. It does not decide whether a message is
+# sent, when, or through what transport -- that remains entry_decision.py /
+# the durable delivery worker's job, untouched here.
+#
+# select_notification_tier() takes a plain dict so it can be unit-tested
+# with mock/stub decision objects today, and will compose correctly once
+# the other in-flight workstreams (lifecycle veto, deterministic structure/
+# absorption gates, AI-neutral-cap, 72.0 threshold) land their fields on the
+# real decision packet. Expected keys (all optional -- missing/None fails
+# closed toward the more conservative tier):
+#   readiness: float                         entry_readiness score, 0-100
+#   lifecycle: str                           e.g. "PRE-TRIGGER", "TRIGGERED"
+#   bearish_15m_structure: bool | None
+#   support_break_close: bool | None
+#   absorption_detected: bool | None
+#   retest_rejected: bool | None             None/absent = unavailable/unconfirmed
+#   valid_execution: bool | None
+#   gates_passed: bool | None                overall "all other gates pass" flag,
+#                                             however entry_decision.py exposes it
+#   lifecycle_veto: bool | None
+#   anti_chase_blocked: bool | None
+#   stale_or_invalid_data: bool | None
+
+TIER_WATCH_PRE_TRIGGER = "WATCH_PRE_TRIGGER"
+TIER_CONFIRMED = "CONFIRMED"
+TIER_ENTRY_READY = "ENTRY_READY"
+TIER_BLOCKED = "BLOCKED"
+
+TITLE_WATCH_PRE_TRIGGER = "🌊 WATERFALL SHORT — WATCH / PRE-TRIGGER"
+TITLE_CONFIRMED = "🌊 WATERFALL SHORT — CONFIRMED"
+TITLE_ENTRY_READY = "🌊 WATERFALL SHORT — ENTRY READY"
+TITLE_BLOCKED_BULLISH_STRUCTURE = "⛔ SHORT BLOCKED — BULLISH STRUCTURE"
+TITLE_BLOCKED_GENERIC = "⛔ SHORT BLOCKED"
+
+_CONFIRMED_READINESS_FLOOR = 72.0
+_ENTRY_READY_READINESS_FLOOR = 85.0
+_FORMING_READINESS_FLOOR = 55.0
+
+
+def _as_optional_bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _as_readiness(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def select_notification_tier(decision: dict) -> dict:
+    """Compute the presentation tier + title + dominant blocker reason for a
+    decision dict. Pure function, safe to unit test with stub inputs.
+
+    Returns a dict: {"tier", "title", "primary_blocker", "readiness",
+    "lifecycle", "gates_summary"} -- gates_summary is a short list of
+    passed/failed gate labels for inclusion in message bodies.
+    """
+    decision = decision if isinstance(decision, dict) else {}
+    readiness = _as_readiness(decision.get("readiness"))
+    lifecycle = str(decision.get("lifecycle") or "UNKNOWN").upper().replace(" ", "-")
+    bearish = _as_optional_bool(decision.get("bearish_15m_structure"))
+    support_break = _as_optional_bool(decision.get("support_break_close"))
+    absorption = _as_optional_bool(decision.get("absorption_detected"))
+    retest_rejected = _as_optional_bool(decision.get("retest_rejected"))
+    valid_execution = _as_optional_bool(decision.get("valid_execution"))
+    gates_passed = _as_optional_bool(decision.get("gates_passed"))
+    lifecycle_veto = _as_optional_bool(decision.get("lifecycle_veto"))
+    anti_chase = _as_optional_bool(decision.get("anti_chase_blocked"))
+    stale_invalid = _as_optional_bool(decision.get("stale_or_invalid_data"))
+
+    gates_summary = [
+        f"structure={'PASS' if bearish is True else ('FAIL' if bearish is False else 'N/A')}",
+        f"support_break={'PASS' if support_break is True else ('FAIL' if support_break is False else 'N/A')}",
+        f"absorption={'DETECTED' if absorption is True else ('CLEAR' if absorption is False else 'N/A')}",
+        f"retest={'REJECTED' if retest_rejected is True else ('NOT_REJECTED' if retest_rejected is False else 'UNAVAILABLE')}",
+        f"execution={'VALID' if valid_execution is True else ('INVALID' if valid_execution is False else 'N/A')}",
+    ]
+
+    # Hard blockers take priority over everything else; surface the
+    # dominant/most specific reason first.
+    if bearish is False:
+        return {
+            "tier": TIER_BLOCKED,
+            "title": TITLE_BLOCKED_BULLISH_STRUCTURE,
+            "primary_blocker": "BULLISH_STRUCTURE",
+            "readiness": readiness,
+            "lifecycle": lifecycle,
+            "gates_summary": gates_summary,
+        }
+    if lifecycle_veto is True:
+        blocker = "LIFECYCLE_VETO"
+    elif absorption is True:
+        blocker = "ABSORPTION_DETECTED"
+    elif support_break is False:
+        blocker = "NO_SUPPORT_BREAK"
+    elif valid_execution is False:
+        blocker = "INVALID_EXECUTION"
+    elif anti_chase is True:
+        blocker = "ANTI_CHASE_BLOCKED"
+    elif stale_invalid is True:
+        blocker = "STALE_OR_INVALID_DATA"
+    elif gates_passed is False:
+        blocker = "GATES_FAILED"
+    else:
+        blocker = None
+
+    if blocker is not None:
+        return {
+            "tier": TIER_BLOCKED,
+            "title": f"{TITLE_BLOCKED_GENERIC} — {blocker.replace('_', ' ')}",
+            "primary_blocker": blocker,
+            "readiness": readiness,
+            "lifecycle": lifecycle,
+            "gates_summary": gates_summary,
+        }
+
+    if lifecycle in {"PRE-TRIGGER", "PRE_TRIGGER"}:
+        return {
+            "tier": TIER_WATCH_PRE_TRIGGER,
+            "title": TITLE_WATCH_PRE_TRIGGER,
+            "primary_blocker": "LIFECYCLE_PRE_TRIGGER",
+            "readiness": readiness,
+            "lifecycle": lifecycle,
+            "gates_summary": gates_summary,
+        }
+
+    if readiness is None or readiness < _CONFIRMED_READINESS_FLOOR:
+        primary = "READINESS_FORMING" if (readiness is not None and readiness >= _FORMING_READINESS_FLOOR) else "READINESS_INSUFFICIENT"
+        return {
+            "tier": TIER_WATCH_PRE_TRIGGER,
+            "title": TITLE_WATCH_PRE_TRIGGER,
+            "primary_blocker": primary,
+            "readiness": readiness,
+            "lifecycle": lifecycle,
+            "gates_summary": gates_summary,
+        }
+
+    # readiness >= 72.0 from here on -- but hard structural gates must pass
+    # before we render anything stronger than WATCH. A readiness of exactly
+    # 72.0 must never look identical to an 85+ fully confirmed setup.
+    structural_gates_pass = bearish is True and support_break is True and absorption is not True
+    if not structural_gates_pass or lifecycle != "TRIGGERED" or valid_execution is not True:
+        return {
+            "tier": TIER_WATCH_PRE_TRIGGER,
+            "title": TITLE_WATCH_PRE_TRIGGER,
+            "primary_blocker": "STRUCTURAL_GATES_INCOMPLETE",
+            "readiness": readiness,
+            "lifecycle": lifecycle,
+            "gates_summary": gates_summary,
+        }
+
+    if readiness >= _ENTRY_READY_READINESS_FLOOR and retest_rejected is True and gates_passed is not False:
+        return {
+            "tier": TIER_ENTRY_READY,
+            "title": TITLE_ENTRY_READY,
+            "primary_blocker": None,
+            "readiness": readiness,
+            "lifecycle": lifecycle,
+            "gates_summary": gates_summary,
+        }
+
+    # 72.0-84.99, or >=85 without a confirmed retest rejection: confirmed
+    # but intentionally NOT presented as entry-ready.
+    return {
+        "tier": TIER_CONFIRMED,
+        "title": TITLE_CONFIRMED,
+        "primary_blocker": None,
+        "readiness": readiness,
+        "lifecycle": lifecycle,
+        "gates_summary": gates_summary,
+    }
+
+
 class TelegramNotifier:
     def __init__(self, db_adapter=None, scanner=None):
         self.token = settings.telegram_token
@@ -447,11 +624,40 @@ class TelegramNotifier:
         flow = evidence.get("order_flow") if isinstance(evidence.get("order_flow"), dict) else {}
         cascade = evidence.get("cascade") if isinstance(evidence.get("cascade"), dict) else {}
         reasons = [escape(str(item)) for item in packet.get("reason_codes", [])][:6]
+
+        # Change G: title/tier is computed from decision fields, not
+        # hardcoded, so a readiness of exactly 72.0 never renders with the
+        # same visual weight/title as an 85+ fully-confirmed setup. Fields
+        # not yet present on the real decision packet (lifecycle veto,
+        # deterministic structure/absorption gates, AI-neutral-cap, etc.)
+        # simply come through as None and fail closed toward WATCH/CONFIRMED
+        # rather than ENTRY READY.
+        tier_info = select_notification_tier({
+            "readiness": packet.get("entry_readiness"),
+            "lifecycle": packet.get("lifecycle_state"),
+            "bearish_15m_structure": packet.get("bearish_15m_structure"),
+            "support_break_close": packet.get("support_break_close"),
+            "absorption_detected": packet.get("absorption_detected"),
+            "retest_rejected": packet.get("retest_rejected"),
+            "valid_execution": packet.get("valid_execution"),
+            "gates_passed": packet.get("gates_passed"),
+            "lifecycle_veto": packet.get("lifecycle_veto"),
+            "anti_chase_blocked": packet.get("anti_chase_blocked"),
+            "stale_or_invalid_data": packet.get("stale_or_invalid_data"),
+        })
+        title_line = f"<b>{escape(tier_info['title'])}</b>"
+        blocker_lines = (
+            [f"⛔ Primary blocker: <b>{escape(str(tier_info['primary_blocker']))}</b>"]
+            if tier_info["primary_blocker"]
+            else []
+        )
         lines = [
-            "🌊 <b>WATERFALL SHORT — ENTRY READY</b>",
-            f"🪙 <b>#{symbol}</b> · readiness <b>{cls._number(packet.get('entry_readiness'), 1)}/100</b>",
+            title_line,
+            f"🪙 <b>#{symbol}</b> · readiness <b>{cls._number(packet.get('entry_readiness'), 1)}/100</b> · tier <b>{escape(tier_info['tier'])}</b>",
             f"🧭 Lifecycle: <b>{escape(str(packet.get('lifecycle_state') or 'UNKNOWN'))}</b>",
             f"📦 Evidence coverage: <b>{cls._number(packet.get('evidence_coverage_pct'), 1)}%</b>",
+            f"🧮 Gates: {escape(' · '.join(tier_info['gates_summary']))}",
+            *blocker_lines,
             "",
             f"🎯 Entry: <b>${cls._number(plan.get('entry_price'), 8)}</b>",
             f"🛑 SL: <b>${cls._number(plan.get('stop_loss'), 8)}</b> · {escape(str(plan.get('stop_basis') or 'structural'))}",
