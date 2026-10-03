@@ -9,19 +9,19 @@ groups:
         annotations:
           summary: Waterfall backend is unreachable
       - alert: WaterfallBackendMemoryPressure
-        # The backend runs under a hard 2GiB cgroup memory limit
-        # (docker-compose.yml: deploy.resources.limits.memory: 2G, confirmed
-        # on the host as memory.max=2147483648). The previous 3GiB threshold
-        # sat ABOVE that cap, so this alert could never fire - even while
+        # The backend runs under a hard 4GiB cgroup memory limit
+        # (docker-compose.yml: deploy.resources.limits.memory: 4G, confirmed
+        # on the host as memory.max=4294967296). The original threshold sat
+        # ABOVE the old 2GiB cap, so the alert could never fire - even while
         # memory.events recorded hundreds of thousands of limit hits.
-        # 1.8GiB is 90% of the real cap: it fires with headroom left to act,
+        # 3.6GiB is 90% of the actual cap: it fires with headroom left to act,
         # instead of after the kernel already started swapping the process.
-        expr: process_resident_memory_bytes{job="waterfall-backend"} > 1932735283
+        expr: process_resident_memory_bytes{job="waterfall-backend"} > 3865470566
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: Waterfall backend RSS exceeds 90% of its 2 GiB limit
+          summary: Waterfall backend RSS exceeds 90% of its 4 GiB limit
       - alert: WaterfallBackendMemoryGrowth
         expr: deriv(process_resident_memory_bytes{job="waterfall-backend"}[10m]) > 174763
         for: 5m
