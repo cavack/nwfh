@@ -9,17 +9,19 @@ groups:
         annotations:
           summary: Waterfall backend is unreachable
       - alert: WaterfallBackendMemoryPressure
-        # The backend container has no 2GiB memory limit. The old rule claimed
-        # it did and alerted at 1.5GiB, which was a made-up 75% ceiling. The
-        # host has 15GiB and normal backend RSS is about 1.1GiB, so 3GiB is a
-        # real, actionable process-pressure threshold while node-level OOM is
-        # covered separately by the host/swap monitors.
-        expr: process_resident_memory_bytes{job="waterfall-backend"} > 3221225472
+        # The backend runs under a hard 4GiB cgroup memory limit
+        # (docker-compose.yml: deploy.resources.limits.memory: 4G, confirmed
+        # on the host as memory.max=4294967296). The original threshold sat
+        # ABOVE the old 2GiB cap, so the alert could never fire - even while
+        # memory.events recorded hundreds of thousands of limit hits.
+        # 3.6GiB is 90% of the actual cap: it fires with headroom left to act,
+        # instead of after the kernel already started swapping the process.
+        expr: process_resident_memory_bytes{job="waterfall-backend"} > 3865470566
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: Waterfall backend RSS exceeds 3 GiB
+          summary: Waterfall backend RSS exceeds 90% of its 4 GiB limit
       - alert: WaterfallBackendMemoryGrowth
         expr: deriv(process_resident_memory_bytes{job="waterfall-backend"}[10m]) > 174763
         for: 5m
@@ -110,3 +112,49 @@ groups:
           severity: critical
         annotations:
           summary: Shared WebSocket replacement is blocked by unproven transport retirement
+
+  - name: host
+    rules:
+      - alert: HostDiskSpaceCritical
+        expr: |
+          node_filesystem_avail_bytes{mountpoint="/",fstype="ext4"}
+            / node_filesystem_size_bytes{mountpoint="/",fstype="ext4"} < 0.15
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Root filesystem below 15% free
+      - alert: HostDiskSpaceWarning
+        expr: |
+          node_filesystem_avail_bytes{mountpoint="/",fstype="ext4"}
+            / node_filesystem_size_bytes{mountpoint="/",fstype="ext4"} < 0.25
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Root filesystem below 25% free
+      - alert: HostDiskPredictedToFill
+        # This is the rule that was missing when the disk reached 95%.
+        expr: |
+          predict_linear(node_filesystem_avail_bytes{mountpoint="/",fstype="ext4"}[6h], 86400) < 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: Root filesystem projected to fill within 24 hours
+      - alert: HostMemoryPressure
+        expr: |
+          node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Host available memory below 10%
+      - alert: RegistryDatabaseGrowth
+        expr: |
+          predict_linear(wfh_registry_bytes[24h], 30 * 86400) > 60e9
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Registry DB projected to exceed 60 GB within 30 days

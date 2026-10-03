@@ -9,5 +9,5 @@ def test_backend_memory_budget_matches_multi_exchange_runtime_and_bounds_arenas(
     backend = compose.split("  frontend:", 1)[0]
 
     assert 'MALLOC_ARENA_MAX: "2"' in backend
-    assert "memory: 2G" in backend
+    assert "memory: 4G" in backend
     assert "pids: 100" in backend
