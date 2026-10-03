@@ -1664,6 +1664,13 @@ def _entry_outcome_research_provenance(
                 **unavailable_cost,
                 "reason": "future holding-interval funding not yet observed",
             },
+            # Declaration only. It states that the plan levels this decision
+            # produced are already cost-adjusted, and with which constants, so a
+            # modeled net R can be derived at resolution without pretending the
+            # components above were realized.
+            "basis": _ENTRY_OUTCOME_COST_BASIS,
+            "plan_levels_net_of_costs": True,
+            "modeled_constants_pct": dict(_ENTRY_OUTCOME_MODELED_COST_PCT),
         },
     }
 
@@ -1728,6 +1735,44 @@ def _entry_outcome_contract_available(
         and outcome_contract.get("closed_candles_only") is True
         and outcome_contract.get("complete_window_required") is True
         and all(plan.get(key) is not None for key in required_levels)
+    )
+
+
+# Modeled cost basis for outcome attribution.
+#
+# position_calculator folds costs into the trade plan BEFORE deriving levels:
+# the entry fee is applied inside net_entry_price, and the exit fee, funding,
+# target buffer and exit slippage are applied inside carrying_cost before the
+# take-profit levels are computed (position_calculator.py:152, 189-193). The
+# plan levels persisted on the decision are therefore already cost-adjusted, and
+# the R derived from them is a MODELED NET R rather than a gross one.
+#
+# That is why net_r could always have been computed: it was discarded as None,
+# leaving the system without a single expectancy figure. The four cost
+# components stay UNAVAILABLE by design - a fee ledger and future funding
+# genuinely cannot be observed at decision time - so the modeled basis is
+# declared separately instead of being smuggled in as if it were realized.
+_ENTRY_OUTCOME_MODELED_COST_PCT = {
+    "entry_fee_pct": 0.06,       # position_calculator taker_fee_pct
+    "exit_fee_pct": 0.02,        # position_calculator maker_fee_pct
+    "funding_pct": 0.01,         # position_calculator funding_pct
+    "target_buffer_pct": 0.05,   # position_calculator target_buffer_pct
+}
+
+_ENTRY_OUTCOME_COST_BASIS = "MODELED_IN_PLAN_LEVELS"
+
+
+def _entry_outcome_costs_modeled_complete(costs: dict[str, Any]) -> bool:
+    """True when the capture declares the modeled cost basis.
+
+    Deliberately separate from _entry_outcome_costs_complete: modeled costs are
+    measurable but not promotion-grade, so they gate a distinct tier rather than
+    satisfying the realized-cost bar.
+    """
+    return bool(
+        isinstance(costs, dict)
+        and costs.get("basis") == _ENTRY_OUTCOME_COST_BASIS
+        and costs.get("plan_levels_net_of_costs") is True
     )
 
 
@@ -1831,17 +1876,31 @@ async def _resolve_entry_outcome(capture: dict) -> dict | None:
     gross_r = _decision_outcome_gross_r(classification, status, plan, candles)
     costs = capture.get("costs") if isinstance(capture.get("costs"), dict) else {}
     cost_complete = _entry_outcome_costs_complete(costs)
+    costs_modeled = _entry_outcome_costs_modeled_complete(costs)
     provenance_complete = _entry_outcome_provenance_complete(
         capture, classification, gross_r
     )
+    # The plan levels are net of modeled costs, so the R derived from them at
+    # _decision_outcome_gross_r is a modeled NET R. Requires an explicit basis
+    # declaration on the capture; a capture without one leaves this None.
+    net_r = gross_r if (costs_modeled and gross_r is not None) else None
     return {
         "outcome_status": "OBSERVED",
         "classification": classification,
         "raw_outcome_status": status,
         "outcome": outcome,
+        # Plan levels are net of modeled costs, so gross_r and net_r carry the
+        # same value here. gross_r is kept verbatim for existing consumers;
+        # net_r is the name that actually describes the quantity.
         "gross_r": gross_r,
-        "net_r": None,
-        "cost": {"components": costs, "complete": cost_complete},
+        "net_r": net_r,
+        "cost": {
+            "components": costs,
+            "complete": cost_complete,
+            "modeled_complete": costs_modeled,
+            "basis": costs.get("basis") if isinstance(costs, dict) else None,
+            "realized_required_for_promotion": True,
+        },
         "provenance": {
             "decision_packet_sha256": capture.get("decision_packet_sha256"),
             "decision_contract_sha256": capture.get("decision_contract_sha256"),
@@ -1849,8 +1908,16 @@ async def _resolve_entry_outcome(capture: dict) -> dict | None:
             "contract": contract,
             "outcome_contract": outcome_contract,
         },
+        # TIER_C keeps meaning "realized costs, promotion-grade". The modeled
+        # tier reports a usable expectancy without overclaiming.
         "scientific_tier": (
-            "TIER_C" if cost_complete and provenance_complete else "UNAVAILABLE"
+            "TIER_C"
+            if (cost_complete and provenance_complete)
+            else (
+                "TIER_D_MODELED_COSTS"
+                if (costs_modeled and provenance_complete and net_r is not None)
+                else "UNAVAILABLE"
+            )
         ),
     }
 
