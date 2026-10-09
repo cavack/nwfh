@@ -9,7 +9,7 @@ urllib3==2.8.0
 
 # Crypto Exchange Integration
 ccxt==4.5.85
-cryptography==50.0.1
+cryptography==50.0.2
 
 # Data Processing
 pydantic==2.13.5
