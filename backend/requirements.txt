@@ -12,7 +12,7 @@ ccxt==4.5.85
 cryptography==50.0.1
 
 # Data Processing
-pydantic==2.13.5
+pydantic==2.14.1
 pydantic-settings==2.15.0
 
 # Observability and Utilities
